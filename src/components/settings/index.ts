@@ -7,9 +7,6 @@ export { HistorySettings } from "./history/HistorySettings";
 export { AboutSettings } from "./about/AboutSettings";
 export { PostProcessingSettings } from "./post-processing/PostProcessingSettings";
 export { ModelsSettings } from "./models/ModelsSettings";
-export { ProvidersSettings } from "@/fork/providers/ProvidersSettings";
-export { CloudSpeechSettings } from "@/fork/providers/CloudSpeechSettings";
-export { PostProcessingSettings as ForkPostProcessingSettings } from "@/fork/providers/PostProcessingSettings";
 
 // Individual setting components
 export { MicrophoneSelector } from "./MicrophoneSelector";

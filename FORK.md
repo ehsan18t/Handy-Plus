@@ -93,8 +93,7 @@ fork-owned files.
 | `src-tauri/Cargo.toml`                    | Multipart upload support and a shared byte buffer type                                                                                                               |
 | `src-tauri/tauri.conf.json`               | Updater repointed at this fork. Must stay diverged, and upstream's endpoint must not survive beside it: tauri tries them in order and both repos share a signing key |
 | `src/App.tsx`                             | Listener for the degradation event                                                                                                                                   |
-| `src/components/Sidebar.tsx`              | Two new pages, and the post-processing page swapped for the fork's                                                                                                   |
-| `src/components/settings/index.ts`        | Exports for the fork's pages                                                                                                                                         |
+| `src/components/Sidebar.tsx`              | Two new pages and the post-processing page swapped for the fork's, all imported from the `@/fork` barrel                                                             |
 | `src/components/ui/Dropdown.tsx`          | Menu rendered through a portal and positioned against the viewport, so it stops clipping inside scroll containers                                                    |
 | `src/components/ui/Badge.tsx`             | A danger variant, so a rejected key does not render in the brand colour                                                                                              |
 | `src/i18n/index.ts`                       | Registers the fork's string namespace                                                                                                                                |

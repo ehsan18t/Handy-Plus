@@ -1,0 +1,15 @@
+# Fork-owned. Upstream has no .gitattributes, so this file can never conflict.
+
+# Normalise line endings. This repo is developed on Windows with
+# core.autocrlf=true, which checks files out as CRLF while prettier and cargo fmt
+# write LF. Every format run then reported eighty files as modified with no
+# content change, which makes `git status` useless in the middle of a sync, and a
+# useless status is how a real change gets lost in the noise.
+* text=auto eol=lf
+
+# Generated, never hand-merged: `cargo check` settles the lockfile and running
+# the app regenerates the bindings. Which side wins a merge is irrelevant because
+# both get overwritten immediately, so take either and stop asking.
+# Needs `git config merge.ours.driver true` once per clone; see docs/FORK_RECIPE.md.
+src/bindings.ts merge=ours
+src-tauri/Cargo.lock merge=ours

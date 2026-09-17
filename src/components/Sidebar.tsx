@@ -20,10 +20,12 @@ import {
   DebugSettings,
   AboutSettings,
   ModelsSettings,
-  ProvidersSettings,
+} from "./settings";
+import {
   CloudSpeechSettings,
   ForkPostProcessingSettings,
-} from "./settings";
+  ProvidersSettings,
+} from "@/fork";
 
 export type SidebarSection = keyof typeof SECTIONS_CONFIG;
 
