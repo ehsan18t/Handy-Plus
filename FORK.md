@@ -75,30 +75,31 @@ fork-owned files.
 
 **Generated. Never merge these by hand, regenerate them.**
 
-| File | Why the fork touches it |
-| --- | --- |
-| `src/bindings.ts` | Tauri type bindings, produced by running the app |
-| `src-tauri/Cargo.lock` | dependency graph |
+| File                   | Why the fork touches it                          |
+| ---------------------- | ------------------------------------------------ |
+| `src/bindings.ts`      | Tauri type bindings, produced by running the app |
+| `src-tauri/Cargo.lock` | dependency graph                                 |
 
 **Hand-written. These carry the hooks.**
 
-| File | What the fork holds there |
-| --- | --- |
-| `src-tauri/src/settings.rs` | Provider capabilities, speech endpoints, whether a provider needs a key; a pass that stamps this onto upstream's provider list by id; the fork's own settings fields |
-| `src-tauri/src/llm_client.rs` | Typed errors carrying status and retry-after on five call paths, plus the redaction helper the pool needs to classify failures |
-| `src-tauri/src/actions.rs` | Four hooks: cloud speech above the transcription manager, deferring the local model load when a provider will serve, dispatching post-processing, and suppressing streaming |
-| `src-tauri/src/lib.rs` | Module declaration, pool construction at startup, command and event registration |
-| `src-tauri/src/shortcut/mod.rs` | Clearing rotation entries that named an instruction template when it is deleted |
-| `src-tauri/src/managers/transcription.rs` | Exposing the local text cleanup so cloud transcripts get the same treatment |
-| `src-tauri/Cargo.toml` | Multipart upload support and a shared byte buffer type |
-| `src-tauri/tauri.conf.json` | Updater repointed at this fork. Must stay diverged, and upstream's endpoint must not survive beside it: tauri tries them in order and both repos share a signing key |
-| `src/App.tsx` | Listener for the degradation event |
-| `src/components/Sidebar.tsx` | Two new pages, and the post-processing page swapped for the fork's |
-| `src/components/settings/index.ts` | Exports for the fork's pages |
-| `src/components/ui/Dropdown.tsx` | Menu rendered through a portal and positioned against the viewport, so it stops clipping inside scroll containers |
-| `src/components/ui/Badge.tsx` | A danger variant, so a rejected key does not render in the brand colour |
-| `src/i18n/index.ts` | Registers the fork's string namespace |
-| `.gitignore` | Re-includes the skills directory upstream excludes |
+| File                                      | What the fork holds there                                                                                                                                                   |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src-tauri/src/settings.rs`               | Provider capabilities, speech endpoints, whether a provider needs a key; a pass that stamps this onto upstream's provider list by id; the fork's own settings fields        |
+| `src-tauri/src/llm_client.rs`             | Typed errors carrying status and retry-after on five call paths, plus the redaction helper the pool needs to classify failures                                              |
+| `src-tauri/src/actions.rs`                | Four hooks: cloud speech above the transcription manager, deferring the local model load when a provider will serve, dispatching post-processing, and suppressing streaming |
+| `src-tauri/src/lib.rs`                    | Module declaration, pool construction at startup, command and event registration                                                                                            |
+| `src-tauri/src/shortcut/mod.rs`           | Clearing rotation entries that named an instruction template when it is deleted                                                                                             |
+| `src-tauri/src/managers/transcription.rs` | Exposing the local text cleanup so cloud transcripts get the same treatment                                                                                                 |
+| `src-tauri/Cargo.toml`                    | Multipart upload support and a shared byte buffer type                                                                                                                      |
+| `src-tauri/tauri.conf.json`               | Updater repointed at this fork. Must stay diverged, and upstream's endpoint must not survive beside it: tauri tries them in order and both repos share a signing key        |
+| `src/App.tsx`                             | Listener for the degradation event                                                                                                                                          |
+| `src/components/Sidebar.tsx`              | Two new pages, and the post-processing page swapped for the fork's                                                                                                          |
+| `src/components/settings/index.ts`        | Exports for the fork's pages                                                                                                                                                |
+| `src/components/ui/Dropdown.tsx`          | Menu rendered through a portal and positioned against the viewport, so it stops clipping inside scroll containers                                                           |
+| `src/components/ui/Badge.tsx`             | A danger variant, so a rejected key does not render in the brand colour                                                                                                     |
+| `src/i18n/index.ts`                       | Registers the fork's string namespace                                                                                                                                       |
+| `.gitignore`                              | Re-includes the skills directory upstream excludes                                                                                                                          |
+| `.prettierignore`                         | Excludes `.claude/` so the app formatter leaves fork tooling alone                                                                                                          |
 
 ## Decisions taken deliberately
 

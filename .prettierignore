@@ -19,3 +19,7 @@ src-tauri/src/catalog/catalog.json
 # Misc
 .DS_Store
 *.log
+
+# Fork: model-facing tooling, not app source. Keeping it out of the app
+# formatter stops `bun run format` churning files the app never loads.
+.claude/
