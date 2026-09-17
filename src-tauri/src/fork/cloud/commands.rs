@@ -50,7 +50,7 @@ pub fn add_cloud_credential(
 
     // `pool::plan` skips keyless credentials silently; reject at the point the
     // user can still act on it.
-    if crate::fork::cloud::providers::requires_credential(&provider) && secret.trim().is_empty() {
+    if crate::fork::cloud::providers::requires_credential(provider) && secret.trim().is_empty() {
         return Err(format!("{} needs an API key", provider.label));
     }
 
