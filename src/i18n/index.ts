@@ -15,12 +15,30 @@ const localeModules = import.meta.glob<{ default: Record<string, unknown> }>(
   { eager: true },
 );
 
+// Fork-owned strings live in their own `fork` namespace file that upstream does
+// not have. Upstream regularly touches two dozen translation.json files in a
+// single commit, so keeping fork strings out of them removes that whole class of
+// rebase conflict.
+const forkModules = import.meta.glob<{ default: Record<string, unknown> }>(
+  "./locales/*/fork.json",
+  { eager: true },
+);
+
 // Build resources from discovered locale files
-const resources: Record<string, { translation: Record<string, unknown> }> = {};
+const resources: Record<string, Record<string, Record<string, unknown>>> = {};
 for (const [path, module] of Object.entries(localeModules)) {
   const langCode = path.match(/\.\/locales\/(.+)\/translation\.json/)?.[1];
   if (langCode) {
     resources[langCode] = { translation: module.default };
+  }
+}
+
+for (const [path, module] of Object.entries(forkModules)) {
+  const langCode = path.match(/\.\/locales\/(.+)\/fork\.json/)?.[1];
+  // Only attach to locales that already exist: a stray fork.json must not
+  // register a language whose main translations are missing.
+  if (langCode && resources[langCode]) {
+    resources[langCode].fork = module.default;
   }
 }
 

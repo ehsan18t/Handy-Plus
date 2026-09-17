@@ -1,6 +1,15 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
-import { Cog, FlaskConical, History, Info, Sparkles, Cpu } from "lucide-react";
+import {
+  Cog,
+  FlaskConical,
+  History,
+  Info,
+  Sparkles,
+  Cpu,
+  KeyRound,
+  CloudCog,
+} from "lucide-react";
 import HandyTextLogo from "./icons/HandyTextLogo";
 import HandyHand from "./icons/HandyHand";
 import { useSettings } from "../hooks/useSettings";
@@ -10,8 +19,10 @@ import {
   HistorySettings,
   DebugSettings,
   AboutSettings,
-  PostProcessingSettings,
   ModelsSettings,
+  ProvidersSettings,
+  CloudSpeechSettings,
+  ForkPostProcessingSettings,
 } from "./settings";
 
 export type SidebarSection = keyof typeof SECTIONS_CONFIG;
@@ -50,17 +61,35 @@ export const SECTIONS_CONFIG = {
     component: ModelsSettings,
     enabled: () => true,
   },
+  // Keys come before the two pages that consume them, and Cloud Speech sits
+  // next to Models since it is the "use a remote engine instead" switch.
+  providers: {
+    // Fork strings live in their own namespace so upstream's translation files
+    // are never edited.
+    labelKey: "fork:sidebar.providers",
+    icon: KeyRound,
+    component: ProvidersSettings,
+    enabled: () => true,
+  },
+  cloudSpeech: {
+    labelKey: "fork:sidebar.cloudSpeech",
+    icon: CloudCog,
+    component: CloudSpeechSettings,
+    enabled: () => true,
+  },
+  postprocessing: {
+    // Upstream's entry, with only the page swapped: label, icon and gate stay
+    // theirs, so their edits to any of the three keep merging.
+    labelKey: "sidebar.postProcessing",
+    icon: Sparkles,
+    component: ForkPostProcessingSettings,
+    enabled: (settings) => settings?.post_process_enabled ?? false,
+  },
   advanced: {
     labelKey: "sidebar.advanced",
     icon: Cog,
     component: AdvancedSettings,
     enabled: () => true,
-  },
-  postprocessing: {
-    labelKey: "sidebar.postProcessing",
-    icon: Sparkles,
-    component: PostProcessingSettings,
-    enabled: (settings) => settings?.post_process_enabled ?? false,
   },
   debug: {
     labelKey: "sidebar.debug",

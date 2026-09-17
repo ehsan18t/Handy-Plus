@@ -28,7 +28,7 @@ import { Sidebar, SidebarSection, SECTIONS_CONFIG } from "./components/Sidebar";
 import { WhatsNewGate } from "./components/whats-new";
 import { useSettings } from "./hooks/useSettings";
 import { useSettingsStore } from "./stores/settingsStore";
-import { commands } from "@/bindings";
+import { commands, events } from "@/bindings";
 import { getLanguageDirection, initializeRTL } from "@/lib/utils/rtl";
 
 type OnboardingStep = "accessibility" | "model" | "done";
@@ -154,6 +154,29 @@ function App() {
           t("errors.recordingFailed", { error: detail ?? "Unknown error" }),
         );
       }
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [t]);
+
+  // Fork: without this the user cannot tell output quality dropped, and blames
+  // the model rather than an exhausted key.
+  useEffect(() => {
+    const unlisten = events.cloudDegradedEvent.listen(({ payload }) => {
+      const message =
+        payload.outcome === "fell_back_to_local"
+          ? t("fork:degraded.fellBackToLocal")
+          : payload.outcome === "raw_transcript"
+            ? t("fork:degraded.rawTranscript")
+            : t("fork:degraded.failed");
+
+      const notify = payload.outcome === "failed" ? toast.error : toast.warning;
+      // A reason code, not prose: the backend has no locale. Its free-text
+      // detail stays in handy.log.
+      notify(message, {
+        description: t(`fork:degraded.reason.${payload.reason}`),
+      });
     });
     return () => {
       unlisten.then((fn) => fn());

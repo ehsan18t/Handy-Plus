@@ -1,0 +1,133 @@
+{
+  "sidebar": {
+    "providers": "API Keys",
+    "cloudSpeech": "Cloud Speech"
+  },
+  "providers": {
+    "title": "API Keys",
+    "description": "Add your provider keys here. Cloud Speech and Post Processing then choose which of them to use.",
+    "keyCount": "{{count}} key",
+    "keyCount_other": "{{count}} keys",
+    "capability": {
+      "both": "Speech and cleanup",
+      "sttOnly": "Speech only",
+      "chatOnly": "Cleanup only",
+      "keyless": "{{capability}}, no key needed"
+    }
+  },
+  "cloudSpeech": {
+    "title": "Cloud Speech",
+    "description": "Transcribe with a provider instead of the local model, spreading requests across your keys."
+  },
+  "postProcess": {
+    "title": "Post Processing",
+    "description": "Clean up transcripts with a chat model. Each key can use its own model and its own instruction.",
+    "shortcut": "Shortcut",
+    "templates": "Instructions",
+    "templatesDescription": "Write your instructions here. The one selected below is used by any key that does not pick its own.",
+    "usingLegacyProvider": "No keys listed, so cleanup still uses the {{provider}} settings from before this build. Add a key above to switch to rotation."
+  },
+  "credentials": {
+    "add": "Add key",
+    "addTitle": "Add an API key",
+    "editTitle": "Edit key",
+    "label": "Name",
+    "labelPlaceholder": "e.g. personal",
+    "secret": "API key",
+    "secretPlaceholder": "Paste the key",
+    "secretUnchanged": "Leave blank to keep the current key",
+    "baseUrl": "Endpoint",
+    "baseUrlShared": "Shared by every key on this provider.",
+    "noKeyNeeded": "This provider runs without an API key.",
+    "reveal": "Show",
+    "hide": "Hide",
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "deleteConfirm": "Delete this key? It is also removed from your Cloud Speech and Post Processing lists.",
+    "test": "Test",
+    "testing": "Testing…",
+    "testPassed": "Key works. {{count}} model available.",
+    "testPassed_other": "Key works. {{count}} models available.",
+    "testNote": "Testing checks that a key works. It cannot confirm the key has access to a particular model.",
+    "moveUp": "Move up",
+    "moveDown": "Move down",
+    "validity": {
+      "untested": "Untested",
+      "valid": "Working",
+      "invalid": "Rejected"
+    }
+  },
+  "binding": {
+    "enable": "Enable",
+    "enableSttDescription": "Send recordings to a provider instead of transcribing on this machine. Audio leaves your computer when this is on.",
+    "keys": "Keys used for this",
+    "keysDescription": "One key per dictation, taken in this order. Drag to reorder.",
+    "noKeysAtAll": "No API keys yet. Add one on the API Keys page first.",
+    "noEligibleKeys": "None of your keys are with a provider that offers this. OpenAI, Groq and Custom endpoints do speech; any provider can do cleanup.",
+    "noEntries": "No keys added yet.",
+    "addEntry": "Add a key",
+    "removeEntry": "Remove from this list",
+    "model": "Model",
+    "modelsUnavailable": "Could not list models: {{error}}",
+    "modelPlaceholderStt": "e.g. whisper-large-v3",
+    "modelPlaceholderChat": "e.g. llama-3.3-70b-versatile",
+    "refreshModels": "Reload the model list",
+    "tokenLimit": "Response limit",
+    "tokenLimitPlaceholder": "e.g. 2000",
+    "instruction": "Instruction",
+    "useDefaultInstruction": "Use the selected one",
+    "rotationTitle": "Rotation policy",
+    "policy": "Selection policy",
+    "policyRoundRobin": "Round robin",
+    "policyLeastRecentlyUsed": "Least recently used",
+    "policyDescription": "Round robin walks the list in order. Least recently used picks the key idle the longest, which spreads load evenly and survives a restart.",
+    "cooldown": "Cooldown",
+    "cooldownDescription": "How long a key stays benched after it trips the strike threshold. Maximum 7 days.",
+    "strikeThreshold": "Strike threshold",
+    "strikeThresholdDescription": "Failed requests before a key is benched. A 429 carrying retry-after is honoured instead and costs no strike.",
+    "fallback": "Fall back to the local model",
+    "fallbackDescription": "When the rotation is exhausted, transcribe on this machine instead. Off surfaces the failure rather than silently degrading.",
+    "language": "Language",
+    "languageDescription": "Leave blank to let the provider detect it.",
+    "languageIgnoredWhenTranslating": "Not used while Translate to English is on: that mode detects the language itself.",
+    "languagePlaceholder": "e.g. en",
+    "sttPrompt": "Vocabulary hints",
+    "sttPromptDescription": "A short list of names, jargon or acronyms the model tends to get wrong. This biases how audio is heard. Do not put instructions here.",
+    "sttPromptPlaceholder": "Kubernetes, Ehsan, PostgreSQL, tauri",
+    "transcriptionTitle": "Transcription",
+    "streamingConflict": "Live transcription preview is turned off while cloud speech is on, because a remote provider returns the whole transcript at once rather than word by word.",
+    "hours": "{{count}} hour",
+    "hours_other": "{{count}} hours",
+    "days": "{{count}} day",
+    "days_other": "{{count}} days"
+  },
+  "entryDialog": {
+    "addTitle": "Add a key to the rotation",
+    "editTitle": "Edit this key",
+    "key": "Key",
+    "keyPlaceholder": "Choose a key",
+    "duplicate": "This key already serves this model. Pick a different model, or edit the existing entry."
+  },
+  "status": {
+    "available": "Ready",
+    "needsModel": "No model",
+    "coolingDown": "Cooling down {{time}}",
+    "strikes": "{{count}} strike",
+    "strikes_other": "{{count}} strikes",
+    "invalid": "Rejected",
+    "clearCooldown": "Clear cooldown"
+  },
+  "degraded": {
+    "fellBackToLocal": "Cloud transcription unavailable, used the local model instead.",
+    "rawTranscript": "Cleanup unavailable, kept the raw transcript.",
+    "failed": "Cloud transcription failed.",
+    "reason": {
+      "not_configured": "No usable key is set up for this.",
+      "all_credentials_failed": "Every key was tried and every one failed.",
+      "recording_too_large": "The recording is too long to upload.",
+      "timed_out": "The provider took too long to answer.",
+      "unexpected": "See handy.log for details."
+    }
+  }
+}
