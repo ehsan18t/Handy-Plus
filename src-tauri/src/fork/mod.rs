@@ -13,3 +13,4 @@
 //! Adding a feature: see `docs/FORK_RECIPE.md`.
 
 pub mod cloud;
+pub mod hooks;

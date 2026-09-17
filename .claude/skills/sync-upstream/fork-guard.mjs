@@ -74,8 +74,8 @@ const uncomment = (text) =>
 const INVARIANTS = [
   {
     name: "upstream post-processing still has a caller",
-    file: "src-tauri/src/actions.rs",
-    want: /NotEngaged => \{ post_process_transcription/,
+    file: "src-tauri/src/fork/hooks.rs",
+    want: /NotEngaged => \{ crate::actions::post_process_transcription/,
     why: "An empty rotation must fall through to upstream's single key. Without this, upgrading silently loses post-processing and pastes raw transcripts.",
   },
   {
@@ -86,27 +86,46 @@ const INVARIANTS = [
   },
   {
     name: "local model load is deferred when cloud serves speech",
-    file: "src-tauri/src/actions.rs",
-    want: /if !cloud_stt_enabled \{ tm\.initiate_model_load\(\);/,
+    file: "src-tauri/src/fork/hooks.rs",
+    // The early return has to come BEFORE the load, which is the whole
+    // behaviour: matching both in any order would pass on code that loads the
+    // model and then decides not to.
+    want: /is_enabled\(settings\) \{ return false; \}.*initiate_model_load/,
     why: "Otherwise every dictation loads a multi-gigabyte model into VRAM that nothing uses.",
   },
   {
     name: "the fallback path loads the model before transcribing",
-    file: "src-tauri/src/actions.rs",
+    file: "src-tauri/src/fork/hooks.rs",
     want: /tm\.initiate_model_load\(\); tm\.transcribe\(samples\)/,
     why: "transcribe() errors rather than loading, so fallback would hard-fail.",
   },
   {
     name: "cloud transcripts get the local text cleanup",
-    file: "src-tauri/src/actions.rs",
+    file: "src-tauri/src/fork/hooks.rs",
     want: /apply_text_post_processing/,
     why: "Custom words and filler stripping would apply to local output only.",
   },
   {
     name: "streaming is suppressed while cloud speech is on",
     file: "src-tauri/src/actions.rs",
-    want: /let model_supports_streaming = !cloud_stt_enabled/,
+    want: /let model_supports_streaming = local_engine/,
     why: "A streaming engine finalizes first and its text wins before cloud ever runs.",
+  },
+  // Reachability. Every check above this pair reads fork/hooks.rs, and a hook
+  // nothing calls is still a perfectly correct hook: those checks would all stay
+  // green while the fork did nothing at all. These two are the only thing tying
+  // the seam back to the upstream file that is supposed to use it.
+  {
+    name: "the transcription path reaches the fork seam",
+    file: "src-tauri/src/actions.rs",
+    want: /crate::fork::hooks::transcribe\(&ah, samples, cancel_generation\)/,
+    why: "Cloud speech becomes unreachable: the toggle stays on, the rotation stays configured, and every dictation silently goes to the local model.",
+  },
+  {
+    name: "the post-processing path reaches the fork seam",
+    file: "src-tauri/src/actions.rs",
+    want: /crate::fork::hooks::post_process\(app, &settings, &final_text\)/,
+    why: "The rotation is bypassed and every cleanup goes to upstream's single key, so a configured pool is silently ignored.",
   },
   {
     name: "Apple Intelligence is reachable through the pool",

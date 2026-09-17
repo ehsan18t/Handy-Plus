@@ -94,7 +94,10 @@ pub(crate) fn is_blank_transcription(transcription: &str) -> bool {
     transcription.trim().is_empty()
 }
 
-async fn complete_unless_cancelled<F, C>(operation: F, is_cancelled: C) -> Option<F::Output>
+pub(crate) async fn complete_unless_cancelled<F, C>(
+    operation: F,
+    is_cancelled: C,
+) -> Option<F::Output>
 where
     F: Future,
     C: Fn() -> bool,
@@ -118,7 +121,10 @@ fn should_use_streaming_overlay(style: OverlayStyle, is_streaming: bool) -> bool
     style == OverlayStyle::Live && is_streaming
 }
 
-async fn post_process_transcription(settings: &AppSettings, transcription: &str) -> Option<String> {
+pub(crate) async fn post_process_transcription(
+    settings: &AppSettings,
+    transcription: &str,
+) -> Option<String> {
     if is_blank_transcription(transcription) {
         debug!("Post-processing skipped because the transcription is empty");
         return None;
@@ -440,19 +446,10 @@ pub(crate) async fn process_transcription_output(
     }
 
     if post_process {
-        // Fork: the pool owns post-processing only once credentials are in the
-        // rotation. Otherwise upstream's single-key path runs untouched.
-        use crate::fork::cloud::post_process::PooledPostProcess;
-        let processed = match crate::fork::cloud::post_process::run(app, &settings, &final_text).await {
-            PooledPostProcess::Processed(text) => Some(text),
-            PooledPostProcess::NotEngaged => {
-                post_process_transcription(&settings, &final_text).await
-            }
-            // Attempted and failed; the pool already told the user why.
-            PooledPostProcess::Degraded => None,
-        };
-
-        if let Some(processed_text) = processed {
+        // Fork: see `fork::hooks::post_process`.
+        if let Some(processed_text) =
+            crate::fork::hooks::post_process(app, &settings, &final_text).await
+        {
             post_processed_text = Some(processed_text.clone());
             final_text = processed_text;
 
@@ -486,8 +483,8 @@ impl ShortcutAction for TranscribeAction {
         let tm = app.state::<Arc<TranscriptionManager>>();
         let rm = app.state::<Arc<AudioRecordingManager>>();
 
-        // Load ASR model and VAD model in parallel. The ASR load is deferred
-        // until the cloud check below, since a remote provider does not need it.
+        // Load ASR model and VAD model in parallel. Fork: the ASR load moved
+        // below, see `fork::hooks::local_model_load_started`.
         let kickoff_started = Instant::now();
         let rm_clone = Arc::clone(&rm);
         std::thread::spawn(move || {
@@ -514,19 +511,9 @@ impl ShortcutAction for TranscribeAction {
         // Use the app-facing model capability as the single pre-recording source
         // for live streaming decisions. Unknown support is represented as false
         // until the model registry is updated by discovery or runtime load.
-        // Fork: cloud speech-to-text is batch-only — it cannot emit the partial
-        // results live streaming exists to show. Suppressing streaming while it
-        // is enabled is not cosmetic: a streaming engine finalizes first, and
-        // its text would be used before the cloud path ever ran.
-        let cloud_stt_enabled = crate::fork::cloud::stt::is_enabled(&settings);
-        // Skipped when a provider is serving speech: loading a multi-gigabyte
-        // model into VRAM on every dictation, for a path that only runs if the
-        // rotation is exhausted, is not a trade worth making. The fallback loads
-        // it then, and pays the load time only when it actually happens.
-        if !cloud_stt_enabled {
-            tm.initiate_model_load();
-        }
-        let model_supports_streaming = !cloud_stt_enabled
+        // Fork: see `fork::hooks::local_model_load_started`.
+        let local_engine = crate::fork::hooks::local_model_load_started(app, &settings);
+        let model_supports_streaming = local_engine
             && selected_model_info
                 .as_ref()
                 .map(|m| m.supports_streaming)
@@ -749,44 +736,9 @@ impl ShortcutAction for TranscribeAction {
                         // surfaced instead — the worker may still hold the engine,
                         // so a batch fallback would contend with it.
                         Ok(Some(text)) if !text.trim().is_empty() => Ok(text),
+                        // Fork: see `fork::hooks::transcribe`.
                         Ok(_) => {
-                            // Fork: cloud speech-to-text is attempted above the
-                            // local engine, so `LoadedEngine` and the whole model
-                            // lifecycle stay untouched. With the toggle off this
-                            // returns NotEngaged and the local path runs exactly
-                            // as it does in vanilla.
-                            use crate::fork::cloud::stt::CloudTranscription;
-                            // Wrapped like post-processing: a stalled upload
-                            // would otherwise hold the pipeline for the whole
-                            // rotation budget.
-                            let cloud = complete_unless_cancelled(
-                                crate::fork::cloud::stt::transcribe(&ah, &get_settings(&ah), &samples),
-                                || rm.was_cancelled_since(cancel_generation),
-                            )
-                            .await;
-                            match cloud {
-                                Some(CloudTranscription::Transcribed(text)) => {
-                                    let language =
-                                        crate::fork::cloud::stt::output_language(&get_settings(&ah));
-                                    Ok(tm.apply_text_post_processing(&text, &language))
-                                }
-                                // Fallback is off and the cloud path failed. The
-                                // user asked to be told rather than quietly served
-                                // lower-quality local output.
-                                Some(CloudTranscription::Failed(reason)) => {
-                                    Err(anyhow::anyhow!("Cloud transcription failed: {reason}"))
-                                }
-                                Some(CloudTranscription::NotEngaged)
-                                | Some(CloudTranscription::FallBackToLocal) => {
-                                    // `transcribe` errors rather than loading,
-                                    // and the load was skipped at start when
-                                    // cloud speech was going to serve this.
-                                    tm.initiate_model_load();
-                                    tm.transcribe(samples)
-                                }
-                                // Cancelled mid-upload; the check below tears down.
-                                None => Ok(String::new()),
-                            }
+                            crate::fork::hooks::transcribe(&ah, samples, cancel_generation).await
                         }
                         Err(err) => Err(err),
                     };
