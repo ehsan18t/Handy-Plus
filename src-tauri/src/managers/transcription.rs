@@ -1770,9 +1770,16 @@ impl TranscriptionManager {
     /// Custom-word correction and filler stripping, for a transcript produced
     /// somewhere other than a loaded engine. No prompt was sent on that path, so
     /// custom words are never already prompted.
-    pub fn apply_text_post_processing(&self, raw: &str) -> String {
+    pub fn apply_text_post_processing(
+        &self,
+        raw: &str,
+        output_language: &OutputLanguageEvidence,
+    ) -> String {
         let settings = crate::settings::get_settings(&self.app_handle);
-        post_process_transcription_text(raw.to_string(), &settings, false)
+        // Empty supported-language list on purpose: a remote provider publishes
+        // no model language metadata, and `detect_output_language` reads that as
+        // "no constraint", not "no detection".
+        post_process_transcription_text(raw.to_string(), &settings, false, output_language, &[])
     }
 }
 

@@ -8,6 +8,7 @@
 //! that cloud models do not appear in the model selector.
 
 use crate::audio_toolkit::constants::WHISPER_SAMPLE_RATE;
+use crate::audio_toolkit::OutputLanguageEvidence;
 use crate::cloud::pool::{plan, Attempt};
 use crate::cloud::runtime::{
     apply_validity_updates, pool, report_degraded, CloudDegradeOutcome, CloudDegradeReason,
@@ -61,6 +62,28 @@ pub enum CloudTranscription {
 pub fn is_enabled(settings: &AppSettings) -> bool {
     let binding = &settings.cloud_bindings.stt;
     binding.enabled && !binding.entries.is_empty()
+}
+
+/// What the local pipeline knows about a cloud transcript's language, in
+/// upstream's terms, so filler-word removal picks the same profile it would for
+/// a locally produced transcript.
+///
+/// `translate` maps to English because that is what the translation endpoint
+/// returns. A provider configured without one silently serves plain
+/// transcription instead, and that transcript is then treated as English; the
+/// cost is one wrong filler profile, which is the same risk upstream already
+/// carries on its own `translate_to_english` path.
+pub fn output_language(settings: &AppSettings) -> OutputLanguageEvidence {
+    if settings.translate_to_english {
+        return OutputLanguageEvidence::TranslatedToEnglish;
+    }
+    // The language the request actually carried, which is the binding's, not
+    // `selected_language`: the local engine and the rotation are configured
+    // separately.
+    match settings.cloud_bindings.stt.language.trim() {
+        "" => OutputLanguageEvidence::Unknown,
+        language => OutputLanguageEvidence::UserSelected(language.to_string()),
+    }
 }
 
 /// The recorder already produces mono f32 at 16 kHz, so this is a format wrap

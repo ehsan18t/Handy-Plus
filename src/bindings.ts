@@ -1109,10 +1109,9 @@ export type CapabilityBinding = {
  */
 enabled?: boolean; 
 /**
- * Order is the round-robin sequence. A credential may appear more than
- * once so long as each appearance names a different model: providers meter
- * per model, so those are independent quotas. Same key and same model is
- * rejected, which is what keeps the "tried once per request" budget honest.
+ * Order is the round-robin sequence. A credential may appear more than once
+ * so long as each appearance names a different model: providers meter per
+ * model, so those are independent quotas.
  */
 entries?: RotationEntry[]; 
 /**
@@ -1137,37 +1136,16 @@ export type CloudDegradeOutcome = "fell_back_to_local" | "raw_transcript" |
  */
 "failed"
 /**
- * Translatable cause. One variant per thing a user could act on, rather than
- * one per call site: "add a key" and "your keys are failing" need different
- * answers, everything else is the same shrug.
+ * Translatable cause. One variant per thing the user could act on.
  */
-export type CloudDegradeReason = 
-/**
- * Nothing usable in the rotation: none selected, none with a model set, or
- * none whose provider serves this.
- */
-"not_configured" | 
-/**
- * Every credential was tried and every one failed.
- */
-"all_credentials_failed" | 
-/**
- * The recording is larger than the upload limit.
- */
-"recording_too_large" | 
-/**
- * The rotation ran past its time budget.
- */
-"timed_out" | "unexpected"
+export type CloudDegradeReason = "not_configured" | "all_credentials_failed" | "recording_too_large" | "timed_out" | "unexpected"
 /**
  * Emitted whenever output quality dropped. Silent degradation is worse than
  * failure: the user would blame the model instead of an exhausted key.
  */
 export type CloudDegradedEvent = { capability: string; outcome: CloudDegradeOutcome; 
 /**
- * What the UI shows, once translated. The backend cannot produce user-
- * facing prose: it has no locale, and the project's rule is that every
- * visible string comes from i18next.
+ * What the UI shows, once translated.
  */
 reason: CloudDegradeReason; 
 /**
@@ -1293,9 +1271,7 @@ capabilities?: Capability[];
  */
 stt_endpoint?: string | null; 
 /**
- * Speech-to-English. Separate because it is a different endpoint, not a
- * parameter: `translate_to_english` is an upstream setting the local engine
- * honours, so cloud speech has to honour it too.
+ * Speech-to-English, which is a different endpoint rather than a parameter.
  */
 stt_translate_endpoint?: string | null; 
 /**

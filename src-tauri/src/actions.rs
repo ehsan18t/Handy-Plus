@@ -766,7 +766,9 @@ impl ShortcutAction for TranscribeAction {
                             .await;
                             match cloud {
                                 Some(CloudTranscription::Transcribed(text)) => {
-                                    Ok(tm.apply_text_post_processing(&text))
+                                    let language =
+                                        crate::cloud::stt::output_language(&get_settings(&ah));
+                                    Ok(tm.apply_text_post_processing(&text, &language))
                                 }
                                 // Fallback is off and the cloud path failed. The
                                 // user asked to be told rather than quietly served
