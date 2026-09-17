@@ -1185,6 +1185,21 @@ pub fn delete_post_process_prompt(app: AppHandle, id: String) -> Result<(), Stri
             settings.post_process_prompts.first().map(|p| p.id.clone());
     }
 
+    // Fork: rotation entries can name their own template. A dangling id fails
+    // the request before it is sent, so clear it back to the selected one.
+    for capability in crate::cloud::Capability::ALL {
+        for entry in settings
+            .cloud_bindings
+            .get_mut(capability)
+            .entries
+            .iter_mut()
+        {
+            if entry.prompt_id.as_ref() == Some(&id) {
+                entry.prompt_id = None;
+            }
+        }
+    }
+
     settings::write_settings(&app, settings);
     Ok(())
 }
@@ -1231,7 +1246,12 @@ pub async fn fetch_post_process_models(
         ));
     }
 
-    crate::llm_client::fetch_models(provider, api_key).await
+    // The typed error is flattened here: this is the Tauri command boundary,
+    // where the frontend only ever shows the message. Callers that need the
+    // classification (the credential pool) call `fetch_models` directly.
+    crate::llm_client::fetch_models(provider, api_key)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

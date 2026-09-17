@@ -1766,6 +1766,16 @@ fn transcribe_cpp_run_plan(
     }
 }
 
+impl TranscriptionManager {
+    /// Custom-word correction and filler stripping, for a transcript produced
+    /// somewhere other than a loaded engine. No prompt was sent on that path, so
+    /// custom words are never already prompted.
+    pub fn apply_text_post_processing(&self, raw: &str) -> String {
+        let settings = crate::settings::get_settings(&self.app_handle);
+        post_process_transcription_text(raw.to_string(), &settings, false)
+    }
+}
+
 fn post_process_transcription_text(
     raw: String,
     settings: &AppSettings,

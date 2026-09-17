@@ -60,7 +60,20 @@ vad-rs = { git = "https://github.com/cjpais/vad-rs", default-features = false }
 earshot = "1.2.2"
 enigo = "0.6.1"
 rodio = { git = "https://github.com/cjpais/rodio.git" }
-reqwest = { version = "0.12", features = ["json", "stream", "gzip", "brotli", "deflate"] }
+# `multipart` is a fork addition: cloud speech-to-text uploads the recording as
+# a file part, which upstream's JSON-only usage never needed. The compression
+# features beside it are upstream's and must stay.
+reqwest = { version = "0.12", features = [
+  "json",
+  "stream",
+  "gzip",
+  "brotli",
+  "deflate",
+  "multipart",
+] }
+# Already in the tree via reqwest; named directly so cloud STT can hand the same
+# encoded WAV to each credential in a rotation without copying it per attempt.
+bytes = "1"
 futures-util = "0.3"
 rustfft = "6.4.0"
 strsim = "0.11.0"

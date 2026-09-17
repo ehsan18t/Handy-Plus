@@ -716,6 +716,82 @@ async rescanLocalModels() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async addCloudCredential(label: string, providerId: string, secret: string) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("add_cloud_credential", { label, providerId, secret }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Edit a credential in place.
+ * 
+ * A `None` secret leaves the stored key untouched, so the UI can save a label
+ * or provider change without ever round-tripping the secret through the
+ * frontend.
+ */
+async updateCloudCredential(id: string, label: string | null, providerId: string | null, secret: string | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_cloud_credential", { id, label, providerId, secret }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async deleteCloudCredential(id: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_cloud_credential", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Verify a credential, and return the models it can reach.
+ * 
+ * One command rather than two: listing models and proving the key works are
+ * the same `GET /models` call, and splitting them meant the model picker could
+ * learn a key was rejected and then not say so. On several providers this
+ * succeeds for a key with no chat or audio scope, so it proves authentication,
+ * not capability.
+ */
+async testCloudCredential(id: string) : Promise<Result<string[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("test_cloud_credential", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setCloudBinding(capability: Capability, binding: CapabilityBinding) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_cloud_binding", { capability, binding }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getCloudCredentialStatus(capability: Capability) : Promise<Result<CredentialCapabilityStatus[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_cloud_credential_status", { capability }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Lift a cooldown by hand, so a just-fixed key does not need hours or a
+ * restart to prove it works.
+ */
+async clearCloudCooldown(capability: Capability, credentialId: string, model: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("clear_cloud_cooldown", { capability, credentialId, model }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async updateMicrophoneMode(alwaysOn: boolean) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("update_microphone_mode", { alwaysOn }) };
@@ -908,10 +984,8 @@ async updateRecordingRetentionPeriod(period: string) : Promise<Result<null, stri
 }
 },
 /**
- * Checks if the Mac is a laptop by detecting battery presence
- * 
- * This uses pmset to check for battery information.
- * Returns true if a battery is detected (laptop), false otherwise (desktop)
+ * Stub implementation for non-macOS platforms
+ * Always returns false since laptop detection is macOS-specific
  */
 async isLaptop() : Promise<Result<boolean, string>> {
     try {
@@ -927,10 +1001,12 @@ async isLaptop() : Promise<Result<boolean, string>> {
 
 
 export const events = __makeEvents__<{
+cloudDegradedEvent: CloudDegradedEvent,
 historyUpdatePayload: HistoryUpdatePayload,
 streamPhaseEvent: StreamPhaseEvent,
 streamTextEvent: StreamTextEvent
 }>({
+cloudDegradedEvent: "cloud-degraded-event",
 historyUpdatePayload: "history-update-payload",
 streamPhaseEvent: "stream-phase-event",
 streamTextEvent: "stream-text-event"
@@ -982,7 +1058,22 @@ whats_new_last_seen_version?: string; selected_model?: string; onboarding_comple
  * Which input channel to use on the selected microphone device.
  * None means "average all channels" (original behavior).
  */
-selected_channel?: number | null; clamshell_microphone?: string | null; selected_output_device?: string | null; translate_to_english?: boolean; selected_language?: string; overlay_position?: OverlayPosition; debug_mode?: boolean; log_level?: LogLevel; custom_words?: string[]; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; theme?: Theme; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; paste_delay_after_ms?: number; 
+selected_channel?: number | null; clamshell_microphone?: string | null; selected_output_device?: string | null; translate_to_english?: boolean; selected_language?: string; overlay_position?: OverlayPosition; debug_mode?: boolean; log_level?: LogLevel; custom_words?: string[]; model_unload_timeout?: ModelUnloadTimeout; word_correction_threshold?: number; history_limit?: number; recording_retention_period?: RecordingRetentionPeriod; paste_method?: PasteMethod; clipboard_handling?: ClipboardHandling; auto_submit?: boolean; auto_submit_key?: AutoSubmitKey; post_process_enabled?: boolean; post_process_provider_id?: string; post_process_providers?: PostProcessProvider[]; post_process_api_keys?: SecretMap; post_process_models?: Partial<{ [key in string]: string }>; post_process_prompts?: LLMPrompt[]; post_process_selected_prompt_id?: string | null; 
+/**
+ * Fork: one entry per API key, stored once however many capabilities use it.
+ */
+cloud_credentials?: Credential[]; 
+/**
+ * Fork: secrets keyed by `Credential::id`. Kept in settings alongside
+ * upstream's `post_process_api_keys` rather than an OS credential store, a
+ * recorded trade to avoid a keyring dependency. Revisit before wider
+ * distribution.
+ */
+cloud_credential_secrets?: SecretMap; 
+/**
+ * Fork: per-capability configuration, both disabled by default.
+ */
+cloud_bindings?: CapabilityBindings; mute_while_recording?: boolean; append_trailing_space?: boolean; app_language?: string; theme?: Theme; experimental_enabled?: boolean; lazy_stream_close?: boolean; keyboard_implementation?: KeyboardImplementation; show_tray_icon?: boolean; paste_delay_ms?: number; paste_delay_after_ms?: number; 
 /**
  * Debug-gated ("beta") receipt-sequenced paste: restore the clipboard only
  * after the target app actually reads the transcript, instead of after a
@@ -1009,7 +1100,122 @@ export type AudioDevice = { index: string; name: string; is_default: boolean }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
 export type AvailableAccelerators = { transcribe: string[]; ort: string[]; gpu_devices: GpuDeviceOption[] }
 export type BindingResponse = { success: boolean; binding: ShortcutBinding | null; error: string | null }
+export type Capability = "stt" | "post_process"
+export type CapabilityBinding = { 
+/**
+ * Speech only. Post-processing has no switch of its own: upstream's
+ * `post_process_enabled` is the on/off, and an empty rotation is what says
+ * "use upstream's single key instead of the pool".
+ */
+enabled?: boolean; 
+/**
+ * Order is the round-robin sequence. A credential may appear more than
+ * once so long as each appearance names a different model: providers meter
+ * per model, so those are independent quotas. Same key and same model is
+ * rejected, which is what keeps the "tried once per request" budget honest.
+ */
+entries?: RotationEntry[]; 
+/**
+ * Speech only: vocabulary bias, shared by every entry. Cleanup
+ * instructions are per entry instead, via [`RotationEntry::prompt_id`].
+ */
+prompt?: string; policy?: RotationPolicy; cooldown_secs?: number; strike_threshold?: number; strike_window_secs?: number; 
+/**
+ * On for speech means "run the local model" when every key is
+ * unavailable; off means the failure surfaces instead.
+ */
+fallback_enabled?: boolean; 
+/**
+ * Speech only. Empty means auto-detect.
+ */
+language?: string }
+export type CapabilityBindings = { stt?: CapabilityBinding; post_process?: CapabilityBinding }
 export type ClipboardHandling = "dont_modify" | "copy_to_clipboard"
+export type CloudDegradeOutcome = "fell_back_to_local" | "raw_transcript" | 
+/**
+ * Nothing ran and the dictation was lost.
+ */
+"failed"
+/**
+ * Translatable cause. One variant per thing a user could act on, rather than
+ * one per call site: "add a key" and "your keys are failing" need different
+ * answers, everything else is the same shrug.
+ */
+export type CloudDegradeReason = 
+/**
+ * Nothing usable in the rotation: none selected, none with a model set, or
+ * none whose provider serves this.
+ */
+"not_configured" | 
+/**
+ * Every credential was tried and every one failed.
+ */
+"all_credentials_failed" | 
+/**
+ * The recording is larger than the upload limit.
+ */
+"recording_too_large" | 
+/**
+ * The rotation ran past its time budget.
+ */
+"timed_out" | "unexpected"
+/**
+ * Emitted whenever output quality dropped. Silent degradation is worse than
+ * failure: the user would blame the model instead of an exhausted key.
+ */
+export type CloudDegradedEvent = { capability: string; outcome: CloudDegradeOutcome; 
+/**
+ * What the UI shows, once translated. The backend cannot produce user-
+ * facing prose: it has no locale, and the project's rule is that every
+ * visible string comes from i18next.
+ */
+reason: CloudDegradeReason; 
+/**
+ * Diagnostic detail for `handy.log` only, never rendered. Log-safe; never
+ * contains a key.
+ */
+detail: string }
+/**
+ * The secret is not here: it lives in `AppSettings::cloud_credential_secrets`
+ * keyed by [`Credential::id`], so this can be logged and rendered freely.
+ */
+export type Credential = { 
+/**
+ * Bindings reference this, never the label, so renaming cannot detach a
+ * credential from its rotation state.
+ */
+id: string; label: string; provider_id: string; validity?: CredentialValidity }
+/**
+ * Not merged into the credentials list: a key can cool down for chat while
+ * serving speech, so a single badge would be a lie.
+ */
+export type CredentialCapabilityStatus = { credential_id: string; 
+/**
+ * Identifies the rotation entry alongside `credential_id`: quotas are
+ * metered per model, so the same key has separate state per model.
+ */
+model: string; capability: string; 
+/**
+ * Seconds of cooldown left, or 0 when the credential is available.
+ */
+cooldown_remaining_secs: number; recent_strikes: number; last_used_ms: number | null; 
+/**
+ * A revoked key is skipped on every request but has no cooldown and no
+ * strikes, so without this it would read as healthy here.
+ */
+validity: CredentialValidity }
+/**
+ * Key-level health, as shown in the credentials list.
+ * 
+ * Not per-capability: a key can cool down for chat while serving speech, so a
+ * single badge would be a lie. Per-capability health lives in the capability
+ * tabs.
+ */
+export type CredentialValidity = "untested" | "valid" | 
+/**
+ * The provider answered 401/403.
+ */
+"invalid"
 export type CustomSounds = { start: boolean; stop: boolean }
 export type EngineType = 
 /**
@@ -1076,8 +1282,60 @@ export type OverlayStyle = "none" | "minimal" | "live"
 export type PaginatedHistory = { entries: HistoryEntry[]; has_more: boolean }
 export type PasteMethod = "ctrl_v" | "direct" | "none" | "shift_insert" | "ctrl_shift_v" | "external_script"
 export type PermissionAccess = "allowed" | "denied" | "unknown"
-export type PostProcessProvider = { id: string; label: string; base_url: string; allow_base_url_edit?: boolean; models_endpoint?: string | null; supports_structured_output?: boolean }
+export type PostProcessProvider = { id: string; label: string; base_url: string; allow_base_url_edit?: boolean; models_endpoint?: string | null; supports_structured_output?: boolean; 
+/**
+ * Extended in place rather than as a fork-owned parallel type, which would
+ * conflict every time upstream touches provider handling.
+ */
+capabilities?: Capability[]; 
+/**
+ * `None` means no speech endpoint, regardless of what `capabilities` says.
+ */
+stt_endpoint?: string | null; 
+/**
+ * Speech-to-English. Separate because it is a different endpoint, not a
+ * parameter: `translate_to_english` is an upstream setting the local engine
+ * honours, so cloud speech has to honour it too.
+ */
+stt_translate_endpoint?: string | null; 
+/**
+ * False for Apple Intelligence and a Custom entry pointed at local Ollama.
+ */
+requires_credential?: boolean }
 export type RecordingRetentionPeriod = "never" | "preserve_limit" | "days_3" | "weeks_2" | "months_3"
+/**
+ * One participant in a rotation.
+ * 
+ * The model lives here rather than on the binding because two providers never
+ * share a model id: an OpenAI key and a Groq key in one rotation need
+ * different ones, and a single shared value would fail every request on
+ * whichever provider does not own it.
+ */
+export type RotationEntry = { credential_id: string; 
+/**
+ * For Apple Intelligence this is a token limit, matching upstream.
+ */
+model?: string; 
+/**
+ * Post-processing only. References `AppSettings::post_process_prompts`.
+ * `None` falls back to the binding's default template.
+ */
+prompt_id?: string | null }
+/**
+ * How the pool picks among credentials already known to be eligible.
+ * Policies never see ineligible ones: filtering happens first, in one place.
+ */
+export type RotationPolicy = "round_robin" | 
+/**
+ * Oldest last-used first. Matches round robin in steady state but
+ * self-corrects after restarts, cooldown expiry, or a key added
+ * mid-session, where a raw cursor would point somewhere stale.
+ */
+"least_recently_used"
+/**
+ * `pub`, not `pub(crate)`: it is reachable through `pub` fields of
+ * `AppSettings`, so the narrower visibility only produced a warning.
+ */
 export type SecretMap = Partial<{ [key in string]: string }>
 export type SecureInputStatus = { 
 /**

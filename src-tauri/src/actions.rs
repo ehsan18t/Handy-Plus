@@ -59,10 +59,10 @@ struct TranscribeAction {
 }
 
 /// Field name for structured output JSON schema
-const TRANSCRIPTION_FIELD: &str = "transcription";
+pub(crate) const TRANSCRIPTION_FIELD: &str = "transcription";
 
 /// Strip invisible Unicode characters that some LLMs may insert
-fn strip_invisible_chars(s: &str) -> String {
+pub(crate) fn strip_invisible_chars(s: &str) -> String {
     s.replace(['\u{200B}', '\u{200C}', '\u{200D}', '\u{FEFF}'], "")
 }
 
@@ -70,7 +70,7 @@ fn strip_invisible_chars(s: &str) -> String {
 /// reasoning, and some local servers put the reasoning text into `content`
 /// instead of a separate field — without this the user would get the model's
 /// chain of thought pasted along with the cleaned transcription.
-fn strip_think_block(s: &str) -> &str {
+pub(crate) fn strip_think_block(s: &str) -> &str {
     if let Some(rest) = s.trim_start().strip_prefix("<think>") {
         if let Some(end) = rest.find("</think>") {
             return rest[end + "</think>".len()..].trim_start();
@@ -81,7 +81,7 @@ fn strip_think_block(s: &str) -> &str {
 
 /// Build a system prompt from the user's prompt template.
 /// Removes `${output}` placeholder since the transcription is sent as the user message.
-fn build_system_prompt(prompt_template: &str) -> String {
+pub(crate) fn build_system_prompt(prompt_template: &str) -> String {
     prompt_template.replace("${output}", "").trim().to_string()
 }
 
@@ -90,7 +90,7 @@ fn build_system_prompt(prompt_template: &str) -> String {
 /// LLM call when nothing was actually transcribed, which would otherwise make
 /// the model reply with an error message such as "you need to provide the
 /// transcription".
-fn is_blank_transcription(transcription: &str) -> bool {
+pub(crate) fn is_blank_transcription(transcription: &str) -> bool {
     transcription.trim().is_empty()
 }
 
@@ -440,7 +440,19 @@ pub(crate) async fn process_transcription_output(
     }
 
     if post_process {
-        if let Some(processed_text) = post_process_transcription(&settings, &final_text).await {
+        // Fork: the pool owns post-processing only once credentials are in the
+        // rotation. Otherwise upstream's single-key path runs untouched.
+        use crate::cloud::post_process::PooledPostProcess;
+        let processed = match crate::cloud::post_process::run(app, &settings, &final_text).await {
+            PooledPostProcess::Processed(text) => Some(text),
+            PooledPostProcess::NotEngaged => {
+                post_process_transcription(&settings, &final_text).await
+            }
+            // Attempted and failed; the pool already told the user why.
+            PooledPostProcess::Degraded => None,
+        };
+
+        if let Some(processed_text) = processed {
             post_processed_text = Some(processed_text.clone());
             final_text = processed_text;
 
@@ -474,9 +486,9 @@ impl ShortcutAction for TranscribeAction {
         let tm = app.state::<Arc<TranscriptionManager>>();
         let rm = app.state::<Arc<AudioRecordingManager>>();
 
-        // Load ASR model and VAD model in parallel
+        // Load ASR model and VAD model in parallel. The ASR load is deferred
+        // until the cloud check below, since a remote provider does not need it.
         let kickoff_started = Instant::now();
-        tm.initiate_model_load();
         let rm_clone = Arc::clone(&rm);
         std::thread::spawn(move || {
             if let Err(e) = rm_clone.preload_vad() {
@@ -502,10 +514,23 @@ impl ShortcutAction for TranscribeAction {
         // Use the app-facing model capability as the single pre-recording source
         // for live streaming decisions. Unknown support is represented as false
         // until the model registry is updated by discovery or runtime load.
-        let model_supports_streaming = selected_model_info
-            .as_ref()
-            .map(|m| m.supports_streaming)
-            .unwrap_or(false);
+        // Fork: cloud speech-to-text is batch-only — it cannot emit the partial
+        // results live streaming exists to show. Suppressing streaming while it
+        // is enabled is not cosmetic: a streaming engine finalizes first, and
+        // its text would be used before the cloud path ever ran.
+        let cloud_stt_enabled = crate::cloud::stt::is_enabled(&settings);
+        // Skipped when a provider is serving speech: loading a multi-gigabyte
+        // model into VRAM on every dictation, for a path that only runs if the
+        // rotation is exhausted, is not a trade worth making. The fallback loads
+        // it then, and pays the load time only when it actually happens.
+        if !cloud_stt_enabled {
+            tm.initiate_model_load();
+        }
+        let model_supports_streaming = !cloud_stt_enabled
+            && selected_model_info
+                .as_ref()
+                .map(|m| m.supports_streaming)
+                .unwrap_or(false);
         let vad_policy = if !settings.vad_enabled {
             VadPolicy::Disabled
         } else if model_supports_streaming {
@@ -724,7 +749,43 @@ impl ShortcutAction for TranscribeAction {
                         // surfaced instead — the worker may still hold the engine,
                         // so a batch fallback would contend with it.
                         Ok(Some(text)) if !text.trim().is_empty() => Ok(text),
-                        Ok(_) => tm.transcribe(samples),
+                        Ok(_) => {
+                            // Fork: cloud speech-to-text is attempted above the
+                            // local engine, so `LoadedEngine` and the whole model
+                            // lifecycle stay untouched. With the toggle off this
+                            // returns NotEngaged and the local path runs exactly
+                            // as it does in vanilla.
+                            use crate::cloud::stt::CloudTranscription;
+                            // Wrapped like post-processing: a stalled upload
+                            // would otherwise hold the pipeline for the whole
+                            // rotation budget.
+                            let cloud = complete_unless_cancelled(
+                                crate::cloud::stt::transcribe(&ah, &get_settings(&ah), &samples),
+                                || rm.was_cancelled_since(cancel_generation),
+                            )
+                            .await;
+                            match cloud {
+                                Some(CloudTranscription::Transcribed(text)) => {
+                                    Ok(tm.apply_text_post_processing(&text))
+                                }
+                                // Fallback is off and the cloud path failed. The
+                                // user asked to be told rather than quietly served
+                                // lower-quality local output.
+                                Some(CloudTranscription::Failed(reason)) => {
+                                    Err(anyhow::anyhow!("Cloud transcription failed: {reason}"))
+                                }
+                                Some(CloudTranscription::NotEngaged)
+                                | Some(CloudTranscription::FallBackToLocal) => {
+                                    // `transcribe` errors rather than loading,
+                                    // and the load was skipped at start when
+                                    // cloud speech was going to serve this.
+                                    tm.initiate_model_load();
+                                    tm.transcribe(samples)
+                                }
+                                // Cancelled mid-upload; the check below tears down.
+                                None => Ok(String::new()),
+                            }
+                        }
                         Err(err) => Err(err),
                     };
 
