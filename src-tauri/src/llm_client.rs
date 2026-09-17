@@ -1,3 +1,4 @@
+use crate::cloud::{parse_retry_after, ApiError};
 use crate::settings::PostProcessProvider;
 use log::{debug, error, info};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, REFERER, USER_AGENT};
@@ -136,7 +137,7 @@ struct ChatMessageResponse {
 }
 
 /// Build headers for API requests based on provider type
-fn build_headers(provider: &PostProcessProvider, api_key: &str) -> Result<HeaderMap, String> {
+fn build_headers(provider: &PostProcessProvider, api_key: &str) -> Result<HeaderMap, ApiError> {
     let mut headers = HeaderMap::new();
 
     // Common headers
@@ -156,15 +157,24 @@ fn build_headers(provider: &PostProcessProvider, api_key: &str) -> Result<Header
         if provider.id == "anthropic" {
             headers.insert(
                 "x-api-key",
-                HeaderValue::from_str(api_key)
-                    .map_err(|e| format!("Invalid API key header value: {}", e))?,
+                HeaderValue::from_str(api_key).map_err(|_| {
+                    // The error's Display quotes the offending header value, so
+                    // it is dropped entirely rather than sanitized: that value
+                    // is the API key.
+                    ApiError::transport(
+                        "API key contains characters that are not valid in an HTTP header",
+                    )
+                })?,
             );
             headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
         } else {
             headers.insert(
                 AUTHORIZATION,
-                HeaderValue::from_str(&format!("Bearer {}", api_key))
-                    .map_err(|e| format!("Invalid authorization header value: {}", e))?,
+                HeaderValue::from_str(&format!("Bearer {}", api_key)).map_err(|_| {
+                    ApiError::transport(
+                        "API key contains characters that are not valid in an HTTP header",
+                    )
+                })?,
             );
         }
     }
@@ -173,8 +183,20 @@ fn build_headers(provider: &PostProcessProvider, api_key: &str) -> Result<Header
 }
 
 /// Create an HTTP client with provider-specific headers
-fn create_client(provider: &PostProcessProvider, api_key: &str) -> Result<reqwest::Client, String> {
+fn create_client(
+    provider: &PostProcessProvider,
+    api_key: &str,
+) -> Result<reqwest::Client, ApiError> {
     let headers = build_headers(provider, api_key)?;
+    // Deliberately no timeout, matching upstream.
+    //
+    // A timeout was added here and then removed: chat completions legitimately
+    // run for minutes (a cold local Ollama loading weights, a reasoning model on
+    // a queued free tier), and any fixed ceiling silently turns a slow success
+    // into a dropped post-process with the raw transcript pasted instead. The
+    // escape hatch already exists and is better: `complete_unless_cancelled`
+    // wraps this whole path and polls cancellation every 25 ms, dropping the
+    // request future, so a stalled connection never wedges dictation.
     reqwest::Client::builder()
         .default_headers(headers)
         .build()
@@ -262,7 +284,39 @@ fn sanitized_url_for_log(url: &str) -> String {
         .unwrap_or_else(|_| "<invalid URL>".to_string())
 }
 
-fn report_reqwest_error(context: &str, error: &reqwest::Error) -> String {
+/// Longest provider error body kept in a log line or a returned error.
+///
+/// Bodies are provider-controlled and occasionally enormous (an HTML error page
+/// from a proxy). Truncating keeps one bad response from flooding the log file.
+const MAX_ERROR_BODY: usize = 2000;
+
+/// Strip the API key from provider-supplied text before it reaches a log or the UI.
+///
+/// Some endpoints echo the offending credential back in an auth-failure body.
+/// The fork's rule is that keys never appear in logs, including error paths, and
+/// an exact match on the key we just sent is the one redaction that is always
+/// correct.
+pub(crate) fn redact_and_truncate(text: &str, api_key: &str) -> String {
+    let mut redacted = if api_key.trim().is_empty() {
+        text.to_string()
+    } else {
+        text.replace(api_key, "[REDACTED]")
+    };
+
+    if redacted.len() > MAX_ERROR_BODY {
+        // Truncate on a char boundary; provider bodies are not guaranteed ASCII.
+        let cutoff = (0..=MAX_ERROR_BODY)
+            .rev()
+            .find(|index| redacted.is_char_boundary(*index))
+            .unwrap_or(0);
+        redacted.truncate(cutoff);
+        redacted.push_str("… [truncated]");
+    }
+
+    redacted
+}
+
+pub(crate) fn report_reqwest_error(context: &str, error: &reqwest::Error) -> ApiError {
     let kinds = reqwest_error_kinds(error);
     let url = error
         .url()
@@ -291,7 +345,10 @@ fn report_reqwest_error(context: &str, error: &reqwest::Error) -> String {
 
     let details = format!("{context} (kind: {kinds}{url}){cause_details}");
     error!("{details}");
-    details
+    // A reqwest error means the exchange failed below the HTTP status layer
+    // (connect, TLS, timeout, decode), so there is no status and no
+    // `retry-after` to carry. The pool classifies these as strike-worthy.
+    ApiError::transport(details)
 }
 
 /// Send a chat completion request to an OpenAI-compatible API
@@ -303,7 +360,7 @@ pub async fn send_chat_completion(
     model: &str,
     prompt: String,
     disable_reasoning: bool,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, ApiError> {
     send_chat_completion_with_schema(
         provider,
         api_key,
@@ -334,7 +391,7 @@ pub async fn send_chat_completion_with_schema(
     system_prompt: Option<String>,
     json_schema: Option<Value>,
     disable_reasoning: bool,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, ApiError> {
     let base_url = provider.base_url.trim_end_matches('/');
     let url = format!("{}/chat/completions", base_url);
 
@@ -407,9 +464,13 @@ pub async fn send_chat_completion_with_schema(
         && matches!(status.as_u16(), 400 | 422)
         && !request_body.reasoning.is_empty()
     {
-        let error_text = response.text().await.unwrap_or_else(|e| {
-            report_reqwest_error("Failed to read reasoning rejection response", &e)
-        });
+        let error_text = response
+            .text()
+            .await
+            .map(|body| redact_and_truncate(&body, &api_key))
+            .unwrap_or_else(|e| {
+                report_reqwest_error("Failed to read reasoning rejection response", &e).message
+            });
         info!(
             "Endpoint rejected request with reasoning disabled (status {}): {}. Retrying without reasoning fields",
             status, error_text
@@ -440,14 +501,24 @@ pub async fn send_chat_completion_with_schema(
     }
 
     if !status.is_success() {
+        // Read `retry-after` before the body is consumed: `text()` takes the
+        // response by value, and this header is the single fact that separates
+        // a healthy rate-limited key from one that needs a strike.
+        let retry_after = parse_retry_after(response.headers());
         let error_text = response
             .text()
             .await
-            .unwrap_or_else(|e| report_reqwest_error("Failed to read API error response", &e));
-        return Err(format!(
-            "API request failed with status {}: {}",
-            status, error_text
-        ));
+            .map(|body| redact_and_truncate(&body, &api_key))
+            .unwrap_or_else(|e| {
+                report_reqwest_error("Failed to read API error response", &e).message
+            });
+        let error = ApiError::from_status(
+            status.as_u16(),
+            retry_after,
+            format!("API request failed: {}", error_text),
+        );
+        error!("{error}");
+        return Err(error);
     }
 
     let completion: ChatCompletionResponse = response
@@ -466,7 +537,7 @@ pub async fn send_chat_completion_with_schema(
 pub async fn fetch_models(
     provider: &PostProcessProvider,
     api_key: String,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, ApiError> {
     let base_url = provider.base_url.trim_end_matches('/');
     let url = format!("{}/models", base_url);
 
@@ -488,14 +559,21 @@ pub async fn fetch_models(
         sanitized_url(response.url())
     );
     if !status.is_success() {
+        let retry_after = parse_retry_after(response.headers());
         let error_text = response
             .text()
             .await
-            .unwrap_or_else(|e| report_reqwest_error("Failed to read model list error", &e));
-        return Err(format!(
-            "Model list request failed ({}): {}",
-            status, error_text
-        ));
+            .map(|body| redact_and_truncate(&body, &api_key))
+            .unwrap_or_else(|e| {
+                report_reqwest_error("Failed to read model list error", &e).message
+            });
+        let error = ApiError::from_status(
+            status.as_u16(),
+            retry_after,
+            format!("Model list request failed: {}", error_text),
+        );
+        error!("{error}");
+        return Err(error);
     }
 
     let parsed: serde_json::Value = response
@@ -561,6 +639,7 @@ mod tests {
             allow_base_url_edit: true,
             models_endpoint: None,
             supports_structured_output: false,
+            ..Default::default()
         }
     }
 
@@ -640,7 +719,7 @@ mod tests {
             .await
             .unwrap_err();
 
-        let details = report_reqwest_error("Failed to parse API response", &error);
+        let details = report_reqwest_error("Failed to parse API response", &error).message;
         assert!(details.contains("kind: decode"));
         assert!(!details.contains("PRIVATE TRANSCRIPTION CONTENT"));
     }
@@ -656,10 +735,35 @@ mod tests {
         .error_for_status()
         .unwrap_err();
 
-        let details = report_reqwest_error("Request failed", &error);
+        let details = report_reqwest_error("Request failed", &error).message;
         assert!(details.contains(&format!("url: {base_url}/private")));
         assert!(!details.contains("SECRET_QUERY_TOKEN"));
         assert!(!details.contains("#private"));
+    }
+
+    #[test]
+    fn error_bodies_never_echo_the_api_key() {
+        let body = r#"{"error":"invalid key sk-live-DEADBEEF supplied"}"#;
+        let redacted = redact_and_truncate(body, "sk-live-DEADBEEF");
+        assert!(!redacted.contains("sk-live-DEADBEEF"));
+        assert!(redacted.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn empty_api_keys_do_not_redact_everything() {
+        // `str::replace` with an empty needle inserts the replacement between
+        // every character, which would destroy the diagnostic entirely.
+        let body = "upstream returned 502";
+        assert_eq!(redact_and_truncate(body, ""), body);
+        assert_eq!(redact_and_truncate(body, "   "), body);
+    }
+
+    #[test]
+    fn oversized_error_bodies_are_truncated_on_a_char_boundary() {
+        let body = "é".repeat(MAX_ERROR_BODY);
+        let redacted = redact_and_truncate(&body, "unused");
+        assert!(redacted.ends_with("… [truncated]"));
+        assert!(redacted.len() < body.len());
     }
 
     #[test]
