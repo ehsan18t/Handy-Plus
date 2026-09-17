@@ -26,7 +26,11 @@ dist-ssr
 *.sln
 *.sw?
 
-.claude/
+# Fork: local Claude state stays ignored, but .claude/skills/ is checked in.
+# Git cannot re-include a path whose parent directory is excluded, so this has to
+# exclude the contents rather than the directory itself.
+.claude/*
+!.claude/skills/
 
 /target/
 recording_*
