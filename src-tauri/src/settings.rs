@@ -461,7 +461,7 @@ pub struct AppSettings {
     pub post_process_selected_prompt_id: Option<String>,
     /// Fork: one entry per API key, stored once however many capabilities use it.
     #[serde(default)]
-    pub cloud_credentials: Vec<crate::fork::cloud::Credential>,
+    pub cloud_credentials: Vec<crate::fork::hooks::Credential>,
     /// Fork: secrets keyed by `Credential::id`. Kept in settings alongside
     /// upstream's `post_process_api_keys` rather than an OS credential store, a
     /// recorded trade to avoid a keyring dependency. Revisit before wider
@@ -470,7 +470,7 @@ pub struct AppSettings {
     pub cloud_credential_secrets: SecretMap,
     /// Fork: per-capability configuration, both disabled by default.
     #[serde(default)]
-    pub cloud_bindings: crate::fork::cloud::CapabilityBindings,
+    pub cloud_bindings: crate::fork::hooks::CapabilityBindings,
     #[serde(default)]
     pub mute_while_recording: bool,
     #[serde(default)]
@@ -964,7 +964,7 @@ pub fn get_default_settings() -> AppSettings {
         post_process_selected_prompt_id: None,
         cloud_credentials: Vec::new(),
         cloud_credential_secrets: SecretMap(HashMap::new()),
-        cloud_bindings: crate::fork::cloud::CapabilityBindings::default(),
+        cloud_bindings: crate::fork::hooks::CapabilityBindings::default(),
         mute_while_recording: false,
         append_trailing_space: false,
         app_language: default_app_language(),

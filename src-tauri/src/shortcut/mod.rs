@@ -1187,7 +1187,7 @@ pub fn delete_post_process_prompt(app: AppHandle, id: String) -> Result<(), Stri
 
     // Fork: rotation entries can name their own template. A dangling id fails
     // the request before it is sent, so clear it back to the selected one.
-    for capability in crate::fork::cloud::Capability::ALL {
+    for capability in crate::fork::hooks::Capability::ALL {
         for entry in settings
             .cloud_bindings
             .get_mut(capability)

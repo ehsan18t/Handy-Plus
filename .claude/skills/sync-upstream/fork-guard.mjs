@@ -243,13 +243,39 @@ function verify() {
 
   const lib = uncomment(read("src-tauri/src/lib.rs") ?? "");
   const registered = new Set(
-    [...lib.matchAll(/cloud::commands::(\w+)/g)].map((match) => match[1]),
+    [...lib.matchAll(/fork::hooks::(\w+)/g)].map((match) => match[1]),
   );
   const missing = EXPECTED_COMMANDS.filter((name) => !registered.has(name));
   record(
     missing.length === 0,
     `all ${EXPECTED_COMMANDS.length} fork commands are registered`,
     `Not registered: ${missing.join(", ")}. A merge in lib.rs dropped it, or a command was added without listing it in EXPECTED_COMMANDS in this script. The UI calls it and fails at runtime.`,
+  );
+
+  // The seam. Every upstream file reaches the fork through `fork::hooks` and
+  // nothing else, so a merge conflict in an upstream file is always about a
+  // single call rather than about fork internals the resolver has to understand.
+  // The rule is only worth having if it is checked: the first time someone
+  // reaches past it for "just one type", the next person copies that, and the
+  // conflict surface starts growing again where nobody is looking.
+  const reachesPastSeam = gitLines(
+    "diff",
+    "--diff-filter=M",
+    "--name-only",
+    "main...HEAD",
+  )
+    .filter((file) => file.endsWith(".rs"))
+    .filter((file) => {
+      const source = read(file);
+      if (source === null) return false;
+      return [...uncomment(source).matchAll(/fork::(\w+)/g)].some(
+        (match) => match[1] !== "hooks",
+      );
+    });
+  record(
+    reachesPastSeam.length === 0,
+    "upstream files reach the fork only through the seam",
+    `Reaching past fork::hooks: ${reachesPastSeam.join(", ")}. Re-export what is needed from fork::hooks instead. Every extra path an upstream file names is another thing a merge conflict makes the resolver reason about.`,
   );
 
   // FORK.md is what a newcomer and every future sync reads to judge risk. If it

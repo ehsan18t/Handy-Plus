@@ -20,6 +20,35 @@ use crate::settings::AppSettings;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 
+/// The fork's Tauri commands and events, re-exported so `lib.rs` registers
+/// them through the seam like everything else. A future feature adds its
+/// commands here and `lib.rs` grows by one line each, never by an import.
+pub use cloud::commands::*;
+pub use cloud::runtime::CloudDegradedEvent;
+
+pub use cloud::error::parse_retry_after;
+/// Fork types that appear in upstream files: settings fields, an error type on
+/// upstream call paths, the capability enum. Re-exported for the same reason as
+/// the commands, so no upstream file ever names a path inside the fork.
+pub use cloud::{ApiError, Capability, CapabilityBindings, Credential};
+
+/// Build everything the fork needs at startup.
+///
+/// A failure here must never stop the app starting. The fork's features are all
+/// opt-in, and without the pool the app simply behaves like vanilla Handy, which
+/// is a far better outcome than refusing to launch over a feature the user may
+/// not even have configured.
+pub fn init(app: &AppHandle) {
+    match cloud::runtime::build_pool(app) {
+        Ok(pool) => {
+            app.manage(pool);
+        }
+        Err(e) => log::error!(
+            "Failed to initialize the credential pool: {e}. Cloud features will be unavailable."
+        ),
+    }
+}
+
 /// Clean up a transcript, through the rotation when one is configured.
 ///
 /// An empty rotation runs upstream's original single-key path unchanged. That is

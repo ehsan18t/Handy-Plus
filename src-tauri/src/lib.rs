@@ -220,17 +220,8 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(history_manager.clone());
     app_handle.manage(tray::TrayState::new());
 
-    // Fork: the credential pool. A failure here must not stop the app starting
-    // — the fork's features are opt-in, and without the pool the app simply
-    // behaves like vanilla Handy.
-    match fork::cloud::runtime::build_pool(app_handle) {
-        Ok(pool) => {
-            app_handle.manage(pool);
-        }
-        Err(e) => log::error!(
-            "Failed to initialize the credential pool: {e}. Cloud features will be unavailable."
-        ),
-    }
+    // Fork: see `fork::hooks::init`.
+    fork::hooks::init(app_handle);
 
     // Note: Shortcuts are NOT initialized here.
     // The frontend is responsible for calling the `initialize_shortcuts` command
@@ -749,14 +740,14 @@ pub fn run(cli_args: CliArgs) {
             commands::models::get_transcription_model_status,
             commands::models::is_model_loading,
             commands::models::rescan_local_models,
-            fork::cloud::commands::add_cloud_credential,
-            fork::cloud::commands::update_cloud_credential,
-            fork::cloud::commands::delete_cloud_credential,
-            fork::cloud::commands::test_cloud_credential,
-            fork::cloud::commands::set_cloud_binding,
-            fork::cloud::commands::get_cloud_credential_status,
-            fork::cloud::commands::clear_cloud_cooldown,
-            fork::cloud::commands::get_cloud_providers,
+            fork::hooks::add_cloud_credential,
+            fork::hooks::update_cloud_credential,
+            fork::hooks::delete_cloud_credential,
+            fork::hooks::test_cloud_credential,
+            fork::hooks::set_cloud_binding,
+            fork::hooks::get_cloud_credential_status,
+            fork::hooks::clear_cloud_cooldown,
+            fork::hooks::get_cloud_providers,
             commands::audio::update_microphone_mode,
             commands::audio::get_microphone_mode,
             commands::audio::get_windows_microphone_permission_status,
@@ -790,7 +781,7 @@ pub fn run(cli_args: CliArgs) {
             managers::history::HistoryUpdatePayload,
             managers::transcription::StreamTextEvent,
             managers::transcription::StreamPhaseEvent,
-            fork::cloud::runtime::CloudDegradedEvent,
+            fork::hooks::CloudDegradedEvent,
         ]);
 
     #[cfg(debug_assertions)] // <- Only export on non-release builds
