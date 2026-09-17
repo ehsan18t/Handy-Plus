@@ -39,11 +39,21 @@ means upstream's original single-key path runs, unchanged.
 
 ## How it fits together
 
-The fork's code lives in two directories: `src-tauri/src/cloud/` on the backend
-and `src/components/settings/providers/` on the frontend, with its strings in a
-separate `fork.json` per locale. None of those existed upstream, so a merge can
-never conflict on them. Keeping fork behaviour inside them is the single most
-useful habit for this project.
+The fork's code lives under one namespace upstream does not have:
+`src-tauri/src/fork/` on the backend and `src/fork/` on the frontend, with its
+strings in a separate `fork.json` per locale. Nothing upstream sits at those
+paths, so a merge can never conflict on them.
+
+Upstream files reach the fork through exactly one door: `fork::hooks` on the
+backend, `@/fork` on the frontend, one line per call. When upstream rewrites the
+function around a one-line call the conflict is mechanical; when it rewrites the
+function around an inlined block, resolving it is a judgement call, and
+judgement calls made six months later are where a fork quietly loses a feature.
+`fork-guard.mjs verify` fails if any upstream file names a fork path other than
+`fork::hooks`, because a rule nothing checks is a rule that decays.
+
+**Adding a feature: read [docs/FORK_RECIPE.md](docs/FORK_RECIPE.md).** That file
+carries the method; this one carries the map.
 
 The backend splits along one line. The pool itself is free of Tauri and of
 settings persistence: it resolves configuration into candidates, applies
