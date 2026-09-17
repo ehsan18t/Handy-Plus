@@ -57,7 +57,7 @@ const MUTATIONS = [
   ["the degraded event is registered",
     "src-tauri/src/lib.rs", "CloudDegradedEvent"],
   ["all 8 fork commands are registered",
-    "src-tauri/src/lib.rs", "cloud::commands::add_cloud_credential"],
+    "src-tauri/src/lib.rs", "fork::hooks::add_cloud_credential"],
   ["FORK.md lists every upstream file the fork edits",
     "FORK.md", "src/components/ui/Badge.tsx"],
 ];
