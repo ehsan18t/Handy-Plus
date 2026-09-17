@@ -142,7 +142,7 @@ pub fn plan(settings: &AppSettings, capability: Capability) -> Result<PoolPlan, 
             continue;
         };
 
-        if !provider.supports(capability) {
+        if !crate::fork::cloud::providers::supports(provider, capability) {
             debug!(
                 "Skipping '{}': provider '{}' does not serve {capability}",
                 credential.label, provider.id
@@ -156,7 +156,8 @@ pub fn plan(settings: &AppSettings, capability: Capability) -> Result<PoolPlan, 
             .cloned()
             .unwrap_or_default();
 
-        if provider.requires_credential && secret.trim().is_empty() {
+        if crate::fork::cloud::providers::requires_credential(provider) && secret.trim().is_empty()
+        {
             debug!("Skipping '{}': no key stored", credential.label);
             continue;
         }

@@ -756,6 +756,7 @@ pub fn run(cli_args: CliArgs) {
             fork::cloud::commands::set_cloud_binding,
             fork::cloud::commands::get_cloud_credential_status,
             fork::cloud::commands::clear_cloud_cooldown,
+            fork::cloud::commands::get_cloud_providers,
             commands::audio::update_microphone_mode,
             commands::audio::get_microphone_mode,
             commands::audio::get_windows_microphone_permission_status,

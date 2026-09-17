@@ -5,7 +5,7 @@ import {
   type Capability,
   type CapabilityBinding,
   type CredentialCapabilityStatus,
-  type PostProcessProvider,
+  type ProviderInfo,
 } from "@/bindings";
 import { useSettings } from "@/hooks/useSettings";
 
@@ -68,20 +68,50 @@ export const useCredentialStatus = (capability: Capability) => {
 export const entryKey = (credentialId: string, model: string) =>
   `${credentialId.length}:${credentialId}:${model}`;
 
-/** Mirrors `PostProcessProvider::supports` on the backend. */
-export const providerSupports = (
-  provider: PostProcessProvider | undefined,
-  capability: Capability,
-): boolean => {
-  if (!provider) return false;
-  // Pre-fork stores have no capabilities field; the backend reads that as
-  // post-processing only.
-  if (!(provider.capabilities ?? ["post_process"]).includes(capability)) {
-    return false;
-  }
-  if (capability === "stt") return Boolean(provider.stt_endpoint?.trim());
-  return true;
+/**
+ * Fork metadata for upstream's providers, keyed by provider id.
+ *
+ * It used to ride along on the provider objects in the settings store. It is
+ * derived from the provider id on the backend and never stored, so it is
+ * fetched once and cached for the session rather than re-read per render.
+ */
+let providerInfoCache: Map<string, ProviderInfo> | null = null;
+let providerInfoInFlight: Promise<Map<string, ProviderInfo>> | null = null;
+
+export const useProviderInfo = (): Map<string, ProviderInfo> => {
+  const [info, setInfo] = useState(() => providerInfoCache ?? new Map());
+
+  useEffect(() => {
+    if (providerInfoCache) return;
+    providerInfoInFlight ??= commands.getCloudProviders().then((list) => {
+      providerInfoCache = new Map(list.map((entry) => [entry.id, entry]));
+      return providerInfoCache;
+    });
+
+    let alive = true;
+    providerInfoInFlight.then((loaded) => {
+      if (alive) setInfo(loaded);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  return info;
 };
+
+/**
+ * Mirrors `providers::supports` on the backend. The capability list is already
+ * effective rather than claimed, so there is no endpoint to re-check here.
+ */
+export const providerSupports = (
+  info: ProviderInfo | undefined,
+  capability: Capability,
+): boolean => Boolean(info?.capabilities.includes(capability));
+
+/** Mirrors `providers::requires_credential`. Unknown providers need a key. */
+export const providerRequiresCredential = (info: ProviderInfo | undefined) =>
+  info?.requires_credential !== false;
 
 /**
  * Text that saves on blur, not per keystroke: every save rewrites the whole

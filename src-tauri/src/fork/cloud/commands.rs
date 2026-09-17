@@ -50,7 +50,7 @@ pub fn add_cloud_credential(
 
     // `pool::plan` skips keyless credentials silently; reject at the point the
     // user can still act on it.
-    if provider.requires_credential && secret.trim().is_empty() {
+    if crate::fork::cloud::providers::requires_credential(&provider) && secret.trim().is_empty() {
         return Err(format!("{} needs an API key", provider.label));
     }
 
@@ -180,7 +180,7 @@ pub async fn test_cloud_credential(app: AppHandle, id: String) -> Result<Vec<Str
         .cloned()
         .unwrap_or_default();
 
-    if provider.requires_credential && secret.trim().is_empty() {
+    if crate::fork::cloud::providers::requires_credential(&provider) && secret.trim().is_empty() {
         return Err(format!("{} needs an API key", provider.label));
     }
 
@@ -318,4 +318,19 @@ pub fn clear_cloud_cooldown(
     }
 
     Ok(())
+}
+
+/// Fork metadata for every provider upstream offers, joined to its id.
+///
+/// Exists because that metadata is no longer stored on the provider objects the
+/// settings store hands the frontend. It is static, derived from the provider id
+/// in `providers::meta`, so there is nothing to persist and nothing to migrate.
+#[tauri::command]
+#[specta::specta]
+pub fn get_cloud_providers(app: AppHandle) -> Vec<crate::fork::cloud::ProviderInfo> {
+    get_settings(&app)
+        .post_process_providers
+        .iter()
+        .map(crate::fork::cloud::providers::info)
+        .collect()
 }

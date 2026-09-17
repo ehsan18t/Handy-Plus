@@ -229,12 +229,13 @@ pub async fn transcribe(
 }
 
 async fn send(attempt: Attempt, audio: Bytes, translate: bool) -> Result<String, ApiError> {
-    let url = attempt.provider.stt_url(translate).ok_or_else(|| {
-        ApiError::transport(format!(
-            "provider '{}' has no speech endpoint",
-            attempt.provider.id
-        ))
-    })?;
+    let url =
+        crate::fork::cloud::providers::stt_url(&attempt.provider, translate).ok_or_else(|| {
+            ApiError::transport(format!(
+                "provider '{}' has no speech endpoint",
+                attempt.provider.id
+            ))
+        })?;
 
     let mut form = reqwest::multipart::Form::new()
         .text("model", attempt.model().to_string())

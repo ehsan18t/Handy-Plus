@@ -11,6 +11,7 @@ pub mod credential;
 pub mod error;
 pub mod pool;
 pub mod post_process;
+pub mod providers;
 pub mod runtime;
 pub mod state;
 pub mod stt;
@@ -20,6 +21,7 @@ pub use capability::Capability;
 pub use credential::{new_credential_id, Credential, CredentialValidity};
 pub use error::{parse_retry_after, ApiError, FailureClass};
 pub use pool::{plan, Attempt, CredentialPool, PoolError, PoolPlan, PoolRun};
+pub use providers::ProviderInfo;
 pub use state::{PairState, RotationStateStore};
 
 use std::time::{SystemTime, UNIX_EPOCH};

@@ -13,7 +13,11 @@ import { Input } from "@/components/ui/Input";
 import { SettingsGroup } from "@/components/ui/SettingsGroup";
 import { Alert } from "@/components/ui/Alert";
 import Badge from "@/components/ui/Badge";
-import { providerSupports } from "./useProviders";
+import {
+  providerRequiresCredential,
+  providerSupports,
+  useProviderInfo,
+} from "./useProviders";
 
 interface DraftState {
   /** Empty id means creating, otherwise editing that credential. */
@@ -36,6 +40,8 @@ export const ProvidersSettings: React.FC = () => {
     [settings],
   );
 
+  const providerInfo = useProviderInfo();
+
   const [expanded, setExpanded] = useState<string | null>(null);
   const [draft, setDraft] = useState<DraftState | null>(null);
   const [revealed, setRevealed] = useState(false);
@@ -51,8 +57,9 @@ export const ProvidersSettings: React.FC = () => {
 
   /** Same rule the rotation lists use to decide what to offer. */
   const capabilityLabel = (provider: PostProcessProvider) => {
-    const speech = providerSupports(provider, "stt");
-    const chat = providerSupports(provider, "post_process");
+    const info = providerInfo.get(provider.id);
+    const speech = providerSupports(info, "stt");
+    const chat = providerSupports(info, "post_process");
     const capability =
       speech && chat
         ? t("providers.capability.both")
@@ -60,13 +67,15 @@ export const ProvidersSettings: React.FC = () => {
           ? t("providers.capability.sttOnly")
           : t("providers.capability.chatOnly");
 
-    return provider.requires_credential === false
-      ? t("providers.capability.keyless", { capability })
-      : capability;
+    return providerRequiresCredential(info)
+      ? capability
+      : t("providers.capability.keyless", { capability });
   };
 
   const draftProvider = providers.find((p) => p.id === draft?.providerId);
-  const needsKey = draftProvider?.requires_credential !== false;
+  const needsKey = providerRequiresCredential(
+    providerInfo.get(draftProvider?.id ?? ""),
+  );
   const canSave =
     Boolean(draft?.label.trim()) &&
     (Boolean(draft?.id) || !needsKey || Boolean(draft?.secret.trim()));

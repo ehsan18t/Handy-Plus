@@ -19,6 +19,7 @@ import {
   entryKey,
   formatRemaining,
   providerSupports,
+  useProviderInfo,
   useCredentialStatus,
 } from "./useProviders";
 
@@ -57,15 +58,13 @@ export const RotationEditor: React.FC<RotationEditorProps> = ({
 
   /** Mirrors the backend eligibility rule so no key is offered that the pool
    * would silently skip. */
+  const providerInfo = useProviderInfo();
   const eligible = useMemo(
     () =>
       credentials.filter((credential) =>
-        providerSupports(
-          providers.find((p) => p.id === credential.provider_id),
-          capability,
-        ),
+        providerSupports(providerInfo.get(credential.provider_id), capability),
       ),
-    [credentials, providers, capability],
+    [credentials, providerInfo, capability],
   );
 
   const entries = binding.entries ?? [];

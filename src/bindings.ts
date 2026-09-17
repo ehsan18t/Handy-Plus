@@ -792,6 +792,16 @@ async clearCloudCooldown(capability: Capability, credentialId: string, model: st
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Fork metadata for every provider upstream offers, joined to its id.
+ * 
+ * Exists because that metadata is no longer stored on the provider objects the
+ * settings store hands the frontend. It is static, derived from the provider id
+ * in `providers::meta`, so there is nothing to persist and nothing to migrate.
+ */
+async getCloudProviders() : Promise<ProviderInfo[]> {
+    return await TAURI_INVOKE("get_cloud_providers");
+},
 async updateMicrophoneMode(alwaysOn: boolean) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("update_microphone_mode", { alwaysOn }) };
@@ -1260,24 +1270,20 @@ export type OverlayStyle = "none" | "minimal" | "live"
 export type PaginatedHistory = { entries: HistoryEntry[]; has_more: boolean }
 export type PasteMethod = "ctrl_v" | "direct" | "none" | "shift_insert" | "ctrl_shift_v" | "external_script"
 export type PermissionAccess = "allowed" | "denied" | "unknown"
-export type PostProcessProvider = { id: string; label: string; base_url: string; allow_base_url_edit?: boolean; models_endpoint?: string | null; supports_structured_output?: boolean; 
+export type PostProcessProvider = { id: string; label: string; base_url: string; allow_base_url_edit?: boolean; models_endpoint?: string | null; supports_structured_output?: boolean }
 /**
- * Extended in place rather than as a fork-owned parallel type, which would
- * conflict every time upstream touches provider handling.
+ * What the settings UI needs to know about a provider, joined to its id.
+ * 
+ * The frontend used to read these off the provider objects in the settings
+ * store. It reads them from `get_cloud_providers` instead, so nothing has to
+ * be persisted to make them visible.
  */
-capabilities?: Capability[]; 
+export type ProviderInfo = { id: string; 
 /**
- * `None` means no speech endpoint, regardless of what `capabilities` says.
+ * Effective, not claimed: a capability appears here only when the provider
+ * has what it needs to serve it.
  */
-stt_endpoint?: string | null; 
-/**
- * Speech-to-English, which is a different endpoint rather than a parameter.
- */
-stt_translate_endpoint?: string | null; 
-/**
- * False for Apple Intelligence and a Custom entry pointed at local Ollama.
- */
-requires_credential?: boolean }
+capabilities: Capability[]; requires_credential: boolean }
 export type RecordingRetentionPeriod = "never" | "preserve_limit" | "days_3" | "weeks_2" | "months_3"
 /**
  * One participant in a rotation.
