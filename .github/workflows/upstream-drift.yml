@@ -1,0 +1,141 @@
+name: "upstream drift"
+
+# Fork-only. Tells you the week upstream breaks this fork, instead of six months
+# later when you sit down to sync and 57 commits have piled up.
+#
+# Deliberately cheap: it merges, then runs the fork invariants and the frontend
+# gates. It does not compile the Rust, which needs the Vulkan and OpenBLAS
+# toolchain and turns a three-minute job into a twenty-minute one. The invariants
+# are the part no other gate can replace, because they catch the breakage that
+# compiles cleanly; a Rust signature change fails loudly on the real sync anyway.
+
+on:
+  schedule:
+    # Mondays, 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: upstream-drift
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The merge needs real history, not a shallow clone.
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        id: fetch
+        run: |
+          git remote add upstream https://github.com/cjpais/Handy.git
+          git fetch upstream main
+          echo "count=$(git rev-list --count HEAD..upstream/main)" >> "$GITHUB_OUTPUT"
+
+      - name: Nothing to do
+        if: steps.fetch.outputs.count == '0'
+        run: echo "Fork is level with upstream."
+
+      - name: Attempt the merge
+        id: merge
+        if: steps.fetch.outputs.count != '0'
+        run: |
+          git config user.name "upstream-drift"
+          git config user.email "upstream-drift@users.noreply.github.com"
+          # .gitattributes marks the generated files merge=ours, but the driver
+          # has to exist or git ignores the attribute and reports them as
+          # conflicts every single week.
+          git config merge.ours.driver true
+          if git merge --no-edit upstream/main; then
+            echo "conflicts=" >> "$GITHUB_OUTPUT"
+          else
+            echo "conflicts<<EOF" >> "$GITHUB_OUTPUT"
+            git diff --name-only --diff-filter=U >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+            git merge --abort
+          fi
+
+      - uses: oven-sh/setup-bun@v2
+        if: steps.fetch.outputs.count != '0' && steps.merge.outputs.conflicts == ''
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        if: steps.fetch.outputs.count != '0' && steps.merge.outputs.conflicts == ''
+        run: bun install --frozen-lockfile
+
+      # The one check no other gate replaces: these fail on behaviour that
+      # compiles, typechecks and lints perfectly while being broken.
+      - name: Fork invariants
+        id: invariants
+        if: steps.fetch.outputs.count != '0' && steps.merge.outputs.conflicts == ''
+        run: node .claude/skills/sync-upstream/fork-guard.mjs verify
+
+      - name: Frontend gates
+        if: steps.fetch.outputs.count != '0' && steps.merge.outputs.conflicts == ''
+        run: |
+          bunx tsc --noEmit
+          bun run lint
+          bun run check:translations
+
+      # A conflicting merge skips the gate steps rather than failing them, so
+      # without this the run would report green while saying a sync is broken.
+      - name: Fail on conflicts
+        if: steps.fetch.outputs.count != '0' && steps.merge.outputs.conflicts != ''
+        run: |
+          echo "::error::A merge from upstream/main conflicts. See the drift issue."
+          exit 1
+
+      - name: Report
+        if: failure() || (steps.fetch.outputs.count != '0' && steps.merge.outputs.conflicts != '')
+        uses: actions/github-script@v7
+        env:
+          INCOMING: ${{ steps.fetch.outputs.count }}
+          CONFLICTS: ${{ steps.merge.outputs.conflicts }}
+        with:
+          script: |
+            const { INCOMING, CONFLICTS } = process.env;
+            const title = "Upstream drift: a sync would not come out clean";
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              `${INCOMING} upstream commit(s) are not in this fork.`,
+              "",
+              CONFLICTS
+                ? `The merge conflicts on:\n\n\`\`\`\n${CONFLICTS.trim()}\n\`\`\``
+                : "The merge applies cleanly, but a gate failed afterwards. The fork invariants are the ones worth looking at first: they fail on behaviour that still compiles.",
+              "",
+              `[Run log](${run})`,
+              "",
+              "Procedure: `.claude/skills/sync-upstream/SKILL.md`. Method for fork code: `docs/FORK_RECIPE.md`.",
+              "",
+              "_Opened automatically. Closing it is fine; it reopens on the next failing run._",
+            ].join("\n");
+
+            // One issue, not one per week: a rediscovered problem should reopen
+            // the existing thread rather than bury it under duplicates.
+            const existing = await github.rest.issues.listForRepo({
+              ...context.repo,
+              state: "open",
+              labels: "upstream-drift",
+            });
+            if (existing.data.length > 0) {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: existing.data[0].number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                ...context.repo,
+                title,
+                body,
+                labels: ["upstream-drift"],
+              });
+            }
