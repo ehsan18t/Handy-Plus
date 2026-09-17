@@ -105,6 +105,112 @@ pub struct PostProcessProvider {
     pub models_endpoint: Option<String>,
     #[serde(default)]
     pub supports_structured_output: bool,
+    /// Extended in place rather than as a fork-owned parallel type, which would
+    /// conflict every time upstream touches provider handling.
+    #[serde(default = "default_provider_capabilities")]
+    pub capabilities: Vec<crate::cloud::Capability>,
+    /// `None` means no speech endpoint, regardless of what `capabilities` says.
+    #[serde(default)]
+    pub stt_endpoint: Option<String>,
+    /// Speech-to-English, which is a different endpoint rather than a parameter.
+    #[serde(default)]
+    pub stt_translate_endpoint: Option<String>,
+    /// False for Apple Intelligence and a Custom entry pointed at local Ollama.
+    #[serde(default = "default_requires_credential")]
+    pub requires_credential: bool,
+}
+
+fn default_provider_capabilities() -> Vec<crate::cloud::Capability> {
+    vec![crate::cloud::Capability::PostProcess]
+}
+
+fn default_requires_credential() -> bool {
+    true
+}
+
+impl Default for PostProcessProvider {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            label: String::new(),
+            base_url: String::new(),
+            allow_base_url_edit: false,
+            models_endpoint: Some("/models".to_string()),
+            supports_structured_output: false,
+            capabilities: default_provider_capabilities(),
+            stt_endpoint: None,
+            stt_translate_endpoint: None,
+            requires_credential: default_requires_credential(),
+        }
+    }
+}
+
+impl PostProcessProvider {
+    /// Whether this provider can actually serve `capability`.
+    pub fn supports(&self, capability: crate::cloud::Capability) -> bool {
+        if !self.capabilities.contains(&capability) {
+            return false;
+        }
+        // Trusting the claim alone would produce requests to `{base_url}/None`.
+        match capability {
+            crate::cloud::Capability::Stt => self
+                .stt_endpoint
+                .as_ref()
+                .is_some_and(|path| !path.trim().is_empty()),
+            crate::cloud::Capability::PostProcess => true,
+        }
+    }
+
+    /// Fully-qualified speech URL, when this provider has one. `translate` falls
+    /// back to plain transcription rather than failing when the provider has no
+    /// translation endpoint.
+    pub fn stt_url(&self, translate: bool) -> Option<String> {
+        let path = if translate {
+            self.stt_translate_endpoint
+                .as_ref()
+                .filter(|path| !path.trim().is_empty())
+                .or(self.stt_endpoint.as_ref())?
+        } else {
+            self.stt_endpoint.as_ref()?
+        };
+
+        let path = path.trim();
+        if path.is_empty() {
+            return None;
+        }
+        let base = self.base_url.trim_end_matches('/');
+        Some(format!("{}/{}", base, path.trim_start_matches('/')))
+    }
+}
+
+/// One pass rather than three extra fields on every provider literal: the
+/// literals are upstream's, and each line added there conflicts when upstream
+/// adds or edits a provider.
+fn apply_fork_provider_metadata(providers: &mut [PostProcessProvider]) {
+    use crate::cloud::Capability;
+
+    for provider in providers.iter_mut() {
+        match provider.id.as_str() {
+            "openai" | "groq" => {
+                provider.capabilities = vec![Capability::PostProcess, Capability::Stt];
+                provider.stt_endpoint = Some("/audio/transcriptions".to_string());
+                provider.stt_translate_endpoint = Some("/audio/translations".to_string());
+            }
+            APPLE_INTELLIGENCE_PROVIDER_ID => {
+                // Native Swift APIs, reached without HTTP and without a key.
+                provider.requires_credential = false;
+            }
+            "custom" => {
+                // Upstream already treats a missing key here as legal, so
+                // rotation must not skip it for being keyless.
+                provider.capabilities = vec![Capability::PostProcess, Capability::Stt];
+                provider.stt_endpoint = Some("/audio/transcriptions".to_string());
+                provider.stt_translate_endpoint = Some("/audio/translations".to_string());
+                provider.requires_credential = false;
+            }
+            _ => {}
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type)]
@@ -325,9 +431,11 @@ pub enum VadBackend {
     Earshot,
 }
 
-#[derive(Clone, Serialize, Deserialize, Type)]
+/// `pub`, not `pub(crate)`: it is reachable through `pub` fields of
+/// `AppSettings`, so the narrower visibility only produced a warning.
+#[derive(Clone, Default, Serialize, Deserialize, Type)]
 #[serde(transparent)]
-pub(crate) struct SecretMap(HashMap<String, String>);
+pub struct SecretMap(HashMap<String, String>);
 
 impl fmt::Debug for SecretMap {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -457,6 +565,18 @@ pub struct AppSettings {
     pub post_process_prompts: Vec<LLMPrompt>,
     #[serde(default)]
     pub post_process_selected_prompt_id: Option<String>,
+    /// Fork: one entry per API key, stored once however many capabilities use it.
+    #[serde(default)]
+    pub cloud_credentials: Vec<crate::cloud::Credential>,
+    /// Fork: secrets keyed by `Credential::id`. Kept in settings alongside
+    /// upstream's `post_process_api_keys` rather than an OS credential store, a
+    /// recorded trade to avoid a keyring dependency. Revisit before wider
+    /// distribution.
+    #[serde(default)]
+    pub cloud_credential_secrets: SecretMap,
+    /// Fork: per-capability configuration, both disabled by default.
+    #[serde(default)]
+    pub cloud_bindings: crate::cloud::CapabilityBindings,
     #[serde(default)]
     pub mute_while_recording: bool,
     #[serde(default)]
@@ -656,6 +776,7 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: true,
+            ..Default::default()
         },
         PostProcessProvider {
             id: "zai".to_string(),
@@ -664,6 +785,7 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: true,
+            ..Default::default()
         },
         PostProcessProvider {
             id: "openrouter".to_string(),
@@ -672,6 +794,7 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: true,
+            ..Default::default()
         },
         PostProcessProvider {
             id: "anthropic".to_string(),
@@ -680,6 +803,7 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: false,
+            ..Default::default()
         },
         PostProcessProvider {
             id: "groq".to_string(),
@@ -688,6 +812,7 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: false,
+            ..Default::default()
         },
         PostProcessProvider {
             id: "cerebras".to_string(),
@@ -696,6 +821,7 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: true,
+            ..Default::default()
         },
     ];
 
@@ -712,6 +838,7 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: None,
             supports_structured_output: true,
+            ..Default::default()
         });
     }
 
@@ -723,6 +850,7 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
         allow_base_url_edit: false,
         models_endpoint: Some("/models".to_string()),
         supports_structured_output: true,
+        ..Default::default()
     });
 
     // Custom provider always comes last
@@ -733,7 +861,10 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
         allow_base_url_edit: true,
         models_endpoint: Some("/models".to_string()),
         supports_structured_output: false,
+        ..Default::default()
     });
+
+    apply_fork_provider_metadata(&mut providers);
 
     providers
 }
@@ -816,6 +947,18 @@ fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
                         provider.supports_structured_output
                     );
                     existing.supports_structured_output = provider.supports_structured_output;
+                    changed = true;
+                }
+
+                // Derived, not user-authored, so synced forward the same way: a
+                // pre-fork store has neither field and would never gain speech.
+                if existing.capabilities != provider.capabilities
+                    || existing.stt_endpoint != provider.stt_endpoint
+                    || existing.requires_credential != provider.requires_credential
+                {
+                    existing.capabilities = provider.capabilities.clone();
+                    existing.stt_endpoint = provider.stt_endpoint.clone();
+                    existing.requires_credential = provider.requires_credential;
                     changed = true;
                 }
             }
@@ -948,6 +1091,9 @@ pub fn get_default_settings() -> AppSettings {
         post_process_models: default_post_process_models(),
         post_process_prompts: default_post_process_prompts(),
         post_process_selected_prompt_id: None,
+        cloud_credentials: Vec::new(),
+        cloud_credential_secrets: SecretMap(HashMap::new()),
+        cloud_bindings: crate::cloud::CapabilityBindings::default(),
         mute_while_recording: false,
         append_trailing_space: false,
         app_language: default_app_language(),
@@ -1475,6 +1621,64 @@ mod tests {
         let salvaged = salvage_settings(&stored);
         assert_eq!(salvaged.selected_model, "kept");
         assert_eq!(salvaged.sound_theme, default_sound_theme());
+    }
+
+    #[test]
+    fn salvage_keeps_credentials_when_an_unrelated_field_is_corrupt() {
+        // salvage_settings drops any field that fails to deserialize and logs
+        // only its key. A wiped credential list would be a silent, unrecoverable
+        // data loss, so it must survive corruption elsewhere in the store.
+        let mut stored = default_settings_json();
+        let map = stored.as_object_mut().unwrap();
+        map.insert(
+            "cloud_credentials".into(),
+            serde_json::json!([
+                { "id": "cred_1", "label": "Groq personal", "provider_id": "groq" }
+            ]),
+        );
+        map.insert("sound_theme".into(), serde_json::json!("not-a-theme"));
+
+        let salvaged = salvage_settings(&stored);
+        assert_eq!(salvaged.cloud_credentials.len(), 1);
+        assert_eq!(salvaged.cloud_credentials[0].id, "cred_1");
+        assert_eq!(salvaged.sound_theme, default_sound_theme());
+    }
+
+    #[test]
+    fn fork_provider_metadata_is_synced_onto_stores_written_before_the_fork() {
+        // A pre-fork store has providers with no capabilities field at all.
+        // Without the sync pass, Groq would never gain speech support.
+        let mut settings = get_default_settings();
+        for provider in settings.post_process_providers.iter_mut() {
+            provider.capabilities = vec![crate::cloud::Capability::PostProcess];
+            provider.stt_endpoint = None;
+        }
+
+        assert!(ensure_post_process_defaults(&mut settings));
+
+        let groq = settings
+            .post_process_provider("groq")
+            .expect("groq is built in");
+        assert!(groq.supports(crate::cloud::Capability::Stt));
+        // By suffix, not the whole URL: the base is upstream's literal.
+        assert!(groq
+            .stt_url(false)
+            .is_some_and(|url| url.ends_with("/audio/transcriptions")));
+        assert!(groq
+            .stt_url(true)
+            .is_some_and(|url| url.ends_with("/audio/translations")));
+    }
+
+    #[test]
+    fn providers_without_a_speech_endpoint_do_not_claim_speech() {
+        let settings = get_default_settings();
+        for id in ["anthropic", "openrouter", "cerebras", "zai"] {
+            let provider = settings.post_process_provider(id).expect("built in");
+            assert!(
+                !provider.supports(crate::cloud::Capability::Stt),
+                "{id} must not advertise speech-to-text"
+            );
+        }
     }
 
     #[test]
