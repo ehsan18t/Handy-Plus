@@ -6,9 +6,9 @@
 //! pool owns *who* does it, in what order, and what a failure means. Adding a
 //! policy therefore cannot touch a call site.
 
-use crate::cloud::binding::RotationEntry;
-use crate::cloud::now_ms;
-use crate::cloud::{
+use crate::fork::cloud::binding::RotationEntry;
+use crate::fork::cloud::now_ms;
+use crate::fork::cloud::{
     ApiError, Capability, CapabilityBinding, CredentialValidity, FailureClass, RotationPolicy,
     RotationStateStore,
 };
@@ -423,7 +423,7 @@ impl CredentialPool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cloud::{Credential, RotationStateStore};
+    use crate::fork::cloud::{Credential, RotationStateStore};
     use crate::settings::get_default_settings;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

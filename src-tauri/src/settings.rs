@@ -108,7 +108,7 @@ pub struct PostProcessProvider {
     /// Extended in place rather than as a fork-owned parallel type, which would
     /// conflict every time upstream touches provider handling.
     #[serde(default = "default_provider_capabilities")]
-    pub capabilities: Vec<crate::cloud::Capability>,
+    pub capabilities: Vec<crate::fork::cloud::Capability>,
     /// `None` means no speech endpoint, regardless of what `capabilities` says.
     #[serde(default)]
     pub stt_endpoint: Option<String>,
@@ -120,8 +120,8 @@ pub struct PostProcessProvider {
     pub requires_credential: bool,
 }
 
-fn default_provider_capabilities() -> Vec<crate::cloud::Capability> {
-    vec![crate::cloud::Capability::PostProcess]
+fn default_provider_capabilities() -> Vec<crate::fork::cloud::Capability> {
+    vec![crate::fork::cloud::Capability::PostProcess]
 }
 
 fn default_requires_credential() -> bool {
@@ -147,17 +147,17 @@ impl Default for PostProcessProvider {
 
 impl PostProcessProvider {
     /// Whether this provider can actually serve `capability`.
-    pub fn supports(&self, capability: crate::cloud::Capability) -> bool {
+    pub fn supports(&self, capability: crate::fork::cloud::Capability) -> bool {
         if !self.capabilities.contains(&capability) {
             return false;
         }
         // Trusting the claim alone would produce requests to `{base_url}/None`.
         match capability {
-            crate::cloud::Capability::Stt => self
+            crate::fork::cloud::Capability::Stt => self
                 .stt_endpoint
                 .as_ref()
                 .is_some_and(|path| !path.trim().is_empty()),
-            crate::cloud::Capability::PostProcess => true,
+            crate::fork::cloud::Capability::PostProcess => true,
         }
     }
 
@@ -187,7 +187,7 @@ impl PostProcessProvider {
 /// literals are upstream's, and each line added there conflicts when upstream
 /// adds or edits a provider.
 fn apply_fork_provider_metadata(providers: &mut [PostProcessProvider]) {
-    use crate::cloud::Capability;
+    use crate::fork::cloud::Capability;
 
     for provider in providers.iter_mut() {
         match provider.id.as_str() {
@@ -567,7 +567,7 @@ pub struct AppSettings {
     pub post_process_selected_prompt_id: Option<String>,
     /// Fork: one entry per API key, stored once however many capabilities use it.
     #[serde(default)]
-    pub cloud_credentials: Vec<crate::cloud::Credential>,
+    pub cloud_credentials: Vec<crate::fork::cloud::Credential>,
     /// Fork: secrets keyed by `Credential::id`. Kept in settings alongside
     /// upstream's `post_process_api_keys` rather than an OS credential store, a
     /// recorded trade to avoid a keyring dependency. Revisit before wider
@@ -576,7 +576,7 @@ pub struct AppSettings {
     pub cloud_credential_secrets: SecretMap,
     /// Fork: per-capability configuration, both disabled by default.
     #[serde(default)]
-    pub cloud_bindings: crate::cloud::CapabilityBindings,
+    pub cloud_bindings: crate::fork::cloud::CapabilityBindings,
     #[serde(default)]
     pub mute_while_recording: bool,
     #[serde(default)]
@@ -1093,7 +1093,7 @@ pub fn get_default_settings() -> AppSettings {
         post_process_selected_prompt_id: None,
         cloud_credentials: Vec::new(),
         cloud_credential_secrets: SecretMap(HashMap::new()),
-        cloud_bindings: crate::cloud::CapabilityBindings::default(),
+        cloud_bindings: crate::fork::cloud::CapabilityBindings::default(),
         mute_while_recording: false,
         append_trailing_space: false,
         app_language: default_app_language(),
@@ -1650,7 +1650,7 @@ mod tests {
         // Without the sync pass, Groq would never gain speech support.
         let mut settings = get_default_settings();
         for provider in settings.post_process_providers.iter_mut() {
-            provider.capabilities = vec![crate::cloud::Capability::PostProcess];
+            provider.capabilities = vec![crate::fork::cloud::Capability::PostProcess];
             provider.stt_endpoint = None;
         }
 
@@ -1659,7 +1659,7 @@ mod tests {
         let groq = settings
             .post_process_provider("groq")
             .expect("groq is built in");
-        assert!(groq.supports(crate::cloud::Capability::Stt));
+        assert!(groq.supports(crate::fork::cloud::Capability::Stt));
         // By suffix, not the whole URL: the base is upstream's literal.
         assert!(groq
             .stt_url(false)
@@ -1675,7 +1675,7 @@ mod tests {
         for id in ["anthropic", "openrouter", "cerebras", "zai"] {
             let provider = settings.post_process_provider(id).expect("built in");
             assert!(
-                !provider.supports(crate::cloud::Capability::Stt),
+                !provider.supports(crate::fork::cloud::Capability::Stt),
                 "{id} must not advertise speech-to-text"
             );
         }

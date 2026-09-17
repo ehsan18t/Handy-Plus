@@ -7,11 +7,11 @@ use crate::actions::{
     build_system_prompt, is_blank_transcription, strip_invisible_chars, strip_think_block,
     TRANSCRIPTION_FIELD,
 };
-use crate::cloud::pool::{plan, Attempt};
-use crate::cloud::runtime::{
+use crate::fork::cloud::pool::{plan, Attempt};
+use crate::fork::cloud::runtime::{
     apply_validity_updates, pool, report_degraded, CloudDegradeOutcome, CloudDegradeReason,
 };
-use crate::cloud::{ApiError, Capability};
+use crate::fork::cloud::{ApiError, Capability};
 use crate::settings::{AppSettings, LLMPrompt, APPLE_INTELLIGENCE_PROVIDER_ID};
 use log::debug;
 use tauri::AppHandle;

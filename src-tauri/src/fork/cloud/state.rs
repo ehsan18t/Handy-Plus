@@ -5,8 +5,8 @@
 //! silently drops fields that fail to deserialize. Separate from `history.db`
 //! too, so the fork's migration chain cannot collide with upstream's.
 
-use crate::cloud::binding::MAX_COOLDOWN_SECS;
-use crate::cloud::{now_ms, Capability};
+use crate::fork::cloud::binding::MAX_COOLDOWN_SECS;
+use crate::fork::cloud::{now_ms, Capability};
 use anyhow::Result;
 use log::{debug, warn};
 use rusqlite::{params, Connection, OptionalExtension};

@@ -2,7 +2,7 @@
 //! independently: different credentials, models, policies and windows. A
 //! binding references credentials by id and never copies them.
 
-use crate::cloud::Capability;
+use crate::fork::cloud::Capability;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::time::Duration;
@@ -130,7 +130,7 @@ impl CapabilityBinding {
     }
 
     /// Normalise the rotation on the way into settings. Must de-duplicate on
-    /// the same key as [`crate::cloud::plan`], or entries are dropped on save
+    /// the same key as [`crate::fork::cloud::plan`], or entries are dropped on save
     /// that the pool would have accepted.
     pub fn prune_entries(
         &mut self,

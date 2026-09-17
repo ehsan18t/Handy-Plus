@@ -7,7 +7,7 @@ mod autostart;
 mod catalog;
 pub mod cli;
 mod clipboard;
-pub mod cloud;
+pub mod fork;
 mod commands;
 mod helpers;
 mod input;
@@ -223,7 +223,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     // Fork: the credential pool. A failure here must not stop the app starting
     // — the fork's features are opt-in, and without the pool the app simply
     // behaves like vanilla Handy.
-    match cloud::runtime::build_pool(app_handle) {
+    match fork::cloud::runtime::build_pool(app_handle) {
         Ok(pool) => {
             app_handle.manage(pool);
         }
@@ -749,13 +749,13 @@ pub fn run(cli_args: CliArgs) {
             commands::models::get_transcription_model_status,
             commands::models::is_model_loading,
             commands::models::rescan_local_models,
-            cloud::commands::add_cloud_credential,
-            cloud::commands::update_cloud_credential,
-            cloud::commands::delete_cloud_credential,
-            cloud::commands::test_cloud_credential,
-            cloud::commands::set_cloud_binding,
-            cloud::commands::get_cloud_credential_status,
-            cloud::commands::clear_cloud_cooldown,
+            fork::cloud::commands::add_cloud_credential,
+            fork::cloud::commands::update_cloud_credential,
+            fork::cloud::commands::delete_cloud_credential,
+            fork::cloud::commands::test_cloud_credential,
+            fork::cloud::commands::set_cloud_binding,
+            fork::cloud::commands::get_cloud_credential_status,
+            fork::cloud::commands::clear_cloud_cooldown,
             commands::audio::update_microphone_mode,
             commands::audio::get_microphone_mode,
             commands::audio::get_windows_microphone_permission_status,
@@ -789,7 +789,7 @@ pub fn run(cli_args: CliArgs) {
             managers::history::HistoryUpdatePayload,
             managers::transcription::StreamTextEvent,
             managers::transcription::StreamPhaseEvent,
-            cloud::runtime::CloudDegradedEvent,
+            fork::cloud::runtime::CloudDegradedEvent,
         ]);
 
     #[cfg(debug_assertions)] // <- Only export on non-release builds

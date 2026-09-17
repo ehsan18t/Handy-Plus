@@ -442,8 +442,8 @@ pub(crate) async fn process_transcription_output(
     if post_process {
         // Fork: the pool owns post-processing only once credentials are in the
         // rotation. Otherwise upstream's single-key path runs untouched.
-        use crate::cloud::post_process::PooledPostProcess;
-        let processed = match crate::cloud::post_process::run(app, &settings, &final_text).await {
+        use crate::fork::cloud::post_process::PooledPostProcess;
+        let processed = match crate::fork::cloud::post_process::run(app, &settings, &final_text).await {
             PooledPostProcess::Processed(text) => Some(text),
             PooledPostProcess::NotEngaged => {
                 post_process_transcription(&settings, &final_text).await
@@ -518,7 +518,7 @@ impl ShortcutAction for TranscribeAction {
         // results live streaming exists to show. Suppressing streaming while it
         // is enabled is not cosmetic: a streaming engine finalizes first, and
         // its text would be used before the cloud path ever ran.
-        let cloud_stt_enabled = crate::cloud::stt::is_enabled(&settings);
+        let cloud_stt_enabled = crate::fork::cloud::stt::is_enabled(&settings);
         // Skipped when a provider is serving speech: loading a multi-gigabyte
         // model into VRAM on every dictation, for a path that only runs if the
         // rotation is exhausted, is not a trade worth making. The fallback loads
@@ -755,19 +755,19 @@ impl ShortcutAction for TranscribeAction {
                             // lifecycle stay untouched. With the toggle off this
                             // returns NotEngaged and the local path runs exactly
                             // as it does in vanilla.
-                            use crate::cloud::stt::CloudTranscription;
+                            use crate::fork::cloud::stt::CloudTranscription;
                             // Wrapped like post-processing: a stalled upload
                             // would otherwise hold the pipeline for the whole
                             // rotation budget.
                             let cloud = complete_unless_cancelled(
-                                crate::cloud::stt::transcribe(&ah, &get_settings(&ah), &samples),
+                                crate::fork::cloud::stt::transcribe(&ah, &get_settings(&ah), &samples),
                                 || rm.was_cancelled_since(cancel_generation),
                             )
                             .await;
                             match cloud {
                                 Some(CloudTranscription::Transcribed(text)) => {
                                     let language =
-                                        crate::cloud::stt::output_language(&get_settings(&ah));
+                                        crate::fork::cloud::stt::output_language(&get_settings(&ah));
                                     Ok(tm.apply_text_post_processing(&text, &language))
                                 }
                                 // Fallback is off and the cloud path failed. The

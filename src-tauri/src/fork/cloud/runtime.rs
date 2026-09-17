@@ -1,7 +1,7 @@
 //! Glue between the pure pool and the running app, kept out of `pool.rs` so
 //! the rotation logic stays testable without an app handle.
 
-use crate::cloud::{Capability, CredentialPool, CredentialValidity, RotationStateStore};
+use crate::fork::cloud::{Capability, CredentialPool, CredentialValidity, RotationStateStore};
 use crate::settings::{get_settings, write_settings};
 use log::{error, info, warn};
 use serde::Serialize;
@@ -44,10 +44,10 @@ pub enum CloudDegradeReason {
 }
 
 impl CloudDegradeReason {
-    pub fn for_pool_error(error: &crate::cloud::PoolError) -> Self {
+    pub fn for_pool_error(error: &crate::fork::cloud::PoolError) -> Self {
         match error {
-            crate::cloud::PoolError::NotConfigured(_) => Self::NotConfigured,
-            crate::cloud::PoolError::Exhausted { .. } => Self::AllCredentialsFailed,
+            crate::fork::cloud::PoolError::NotConfigured(_) => Self::NotConfigured,
+            crate::fork::cloud::PoolError::Exhausted { .. } => Self::AllCredentialsFailed,
         }
     }
 }

@@ -9,11 +9,11 @@
 
 use crate::audio_toolkit::constants::WHISPER_SAMPLE_RATE;
 use crate::audio_toolkit::OutputLanguageEvidence;
-use crate::cloud::pool::{plan, Attempt};
-use crate::cloud::runtime::{
+use crate::fork::cloud::pool::{plan, Attempt};
+use crate::fork::cloud::runtime::{
     apply_validity_updates, pool, report_degraded, CloudDegradeOutcome, CloudDegradeReason,
 };
-use crate::cloud::{ApiError, Capability};
+use crate::fork::cloud::{ApiError, Capability};
 use crate::settings::AppSettings;
 use bytes::Bytes;
 use log::{debug, info};

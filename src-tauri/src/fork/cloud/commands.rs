@@ -4,9 +4,9 @@
 //! frontend only ever displays them. Callers that need the classification talk
 //! to the pool directly.
 
-use crate::cloud::binding::{CapabilityBinding, MAX_COOLDOWN_SECS, MAX_STRIKE_THRESHOLD};
-use crate::cloud::runtime::pool;
-use crate::cloud::{new_credential_id, Capability, Credential, CredentialValidity};
+use crate::fork::cloud::binding::{CapabilityBinding, MAX_COOLDOWN_SECS, MAX_STRIKE_THRESHOLD};
+use crate::fork::cloud::runtime::pool;
+use crate::fork::cloud::{new_credential_id, Capability, Credential, CredentialValidity};
 use crate::settings::{get_settings, write_settings};
 use serde::Serialize;
 use specta::Type;
@@ -250,7 +250,7 @@ pub fn get_cloud_credential_status(
         return Ok(Vec::new());
     };
 
-    let now = crate::cloud::now_ms();
+    let now = crate::fork::cloud::now_ms();
     let states = pool.state().states_for(capability, window);
 
     // Per entry rather than per credential: one key serving two models has two
