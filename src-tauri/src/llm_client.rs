@@ -347,7 +347,10 @@ pub(crate) fn report_reqwest_error(context: &str, error: &reqwest::Error) -> Api
     error!("{details}");
     // A reqwest error means the exchange failed below the HTTP status layer
     // (connect, TLS, timeout, decode), so there is no status and no
-    // `retry-after` to carry. The pool classifies these as strike-worthy.
+    // `retry-after` to carry. The pool reads a missing status as `Unreachable`
+    // and takes no strike: being offline says nothing about the key. Callers
+    // that do want a strike, such as a 200 with an empty body, build an error
+    // with a status instead of coming through here.
     ApiError::transport(details)
 }
 

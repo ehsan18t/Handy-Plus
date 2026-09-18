@@ -394,7 +394,7 @@ export const ProvidersSettings: React.FC = () => {
                 <Input
                   className="w-full"
                   value={baseUrl}
-                  placeholder="http://localhost:11434/v1"
+                  placeholder={t("providers.baseUrlPlaceholder")}
                   onChange={(e) => setBaseUrl(e.currentTarget.value)}
                 />
                 <span className="text-xs text-mid-gray">

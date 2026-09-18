@@ -213,6 +213,7 @@ export const RotationEditor: React.FC<RotationEditorProps> = ({
                     ? t("status.coolingDown", {
                         time: formatRemaining(
                           status?.cooldown_remaining_secs ?? 0,
+                          t,
                         ),
                       })
                     : status?.recent_strikes

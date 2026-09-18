@@ -17,7 +17,7 @@ use log::{debug, info, warn};
 use std::collections::HashSet;
 use std::fmt;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Everything one call needs, handed to the caller's closure.
 ///
@@ -314,10 +314,17 @@ impl CredentialPool {
     /// chosen credential serves the entire call including any retries the
     /// operation performs internally; switching mid-flight would make failures
     /// unattributable.
+    ///
+    /// `deadline` bounds the whole rotation. It is checked between attempts
+    /// rather than imposed from outside, because cancelling this future loses
+    /// its `PoolRun`: a key marked invalid by a 401 earlier in the loop would
+    /// never reach settings, and would be tried and rejected again on the next
+    /// dictation.
     pub async fn execute<T, F, Fut>(
         &self,
         capability: Capability,
         plan: &PoolPlan,
+        deadline: Option<Instant>,
         operation: F,
     ) -> PoolRun<T>
     where
@@ -348,6 +355,12 @@ impl CredentialPool {
         let mut rejected: HashSet<&str> = HashSet::new();
 
         for index in order {
+            if deadline.is_some_and(|limit| Instant::now() >= limit) {
+                warn!(
+                    "Rotation budget for {capability} spent after {attempted} attempt(s); not trying the rest"
+                );
+                break;
+            }
             let candidate = &plan.candidates[index];
             let credential_id = candidate.entry.credential_id.as_str();
             if rejected.contains(credential_id) {
@@ -521,7 +534,12 @@ mod tests {
 
         for _ in 0..5 {
             let run = pool
-                .execute(CAP, &plan, fails_with(ApiError::transport("dns error")))
+                .execute(
+                    CAP,
+                    &plan,
+                    None,
+                    fails_with(ApiError::transport("dns error")),
+                )
                 .await;
             assert!(run.result.is_err());
         }
@@ -546,7 +564,7 @@ mod tests {
         let (pool, _state) = pool();
         let calls = AtomicUsize::new(0);
         let run = pool
-            .execute(CAP, &plan, |_| {
+            .execute(CAP, &plan, None, |_| {
                 calls.fetch_add(1, Ordering::SeqCst);
                 std::future::ready(Err::<String, _>(ApiError::from_status(401, None, "nope")))
             })
@@ -569,7 +587,7 @@ mod tests {
 
         let mut served = Vec::new();
         for _ in 0..4 {
-            let run = pool.execute(CAP, &plan, ok_op).await;
+            let run = pool.execute(CAP, &plan, None, ok_op).await;
             served.push(run.result.unwrap());
         }
 
@@ -650,7 +668,12 @@ mod tests {
 
         let mut served = Vec::new();
         for _ in 0..4 {
-            served.push(pool.execute(CAP, &resolved, ok_op).await.result.unwrap());
+            served.push(
+                pool.execute(CAP, &resolved, None, ok_op)
+                    .await
+                    .result
+                    .unwrap(),
+            );
         }
         assert_eq!(served, vec!["cred_0", "cred_1", "cred_2", "cred_0"]);
     }
@@ -666,7 +689,10 @@ mod tests {
         state.mark_used("cred_1", CAP, MODEL);
 
         assert_eq!(
-            pool.execute(CAP, &resolved, ok_op).await.result.unwrap(),
+            pool.execute(CAP, &resolved, None, ok_op)
+                .await
+                .result
+                .unwrap(),
             "cred_2"
         );
     }
@@ -677,7 +703,7 @@ mod tests {
         let resolved = plan(&settings_with(1), CAP).unwrap();
         state.record_strike("cred_0", CAP, MODEL, WINDOW);
 
-        let run = pool.execute(CAP, &resolved, ok_op).await;
+        let run = pool.execute(CAP, &resolved, None, ok_op).await;
 
         assert_eq!(run.result.unwrap(), "cred_0");
         assert_eq!(
@@ -699,7 +725,7 @@ mod tests {
 
         let calls = AtomicUsize::new(0);
         let run = pool
-            .execute(CAP, &resolved, |attempt: Attempt| {
+            .execute(CAP, &resolved, None, |attempt: Attempt| {
                 let first = calls.fetch_add(1, Ordering::SeqCst) == 0;
                 std::future::ready(if first {
                     Err(ApiError::from_status(
@@ -729,12 +755,12 @@ mod tests {
         let resolved = plan(&settings, CAP).unwrap();
         let fail = fails_with(ApiError::from_status(500, None, "boom"));
 
-        pool.execute(CAP, &resolved, &fail).await;
+        pool.execute(CAP, &resolved, None, &fail).await;
         assert!(!state
             .pair_state("cred_0", CAP, MODEL, WINDOW)
             .is_cooling_down(now_ms()));
 
-        pool.execute(CAP, &resolved, &fail).await;
+        pool.execute(CAP, &resolved, None, &fail).await;
         assert!(state
             .pair_state("cred_0", CAP, MODEL, WINDOW)
             .is_cooling_down(now_ms()));
@@ -747,7 +773,7 @@ mod tests {
 
         let calls = AtomicUsize::new(0);
         let run = pool
-            .execute(CAP, &resolved, |_: Attempt| {
+            .execute(CAP, &resolved, None, |_: Attempt| {
                 calls.fetch_add(1, Ordering::SeqCst);
                 std::future::ready(Err::<String, _>(ApiError::from_status(
                     401,
@@ -779,7 +805,7 @@ mod tests {
         let calls = AtomicUsize::new(0);
         let chat = plan(&settings, CAP).unwrap();
         let run = pool
-            .execute(CAP, &chat, |attempt: Attempt| {
+            .execute(CAP, &chat, None, |attempt: Attempt| {
                 calls.fetch_add(1, Ordering::SeqCst);
                 std::future::ready(Ok(attempt.credential_id().to_string()))
             })
@@ -792,7 +818,7 @@ mod tests {
 
         let speech = plan(&settings, Capability::Stt).unwrap();
         assert_eq!(
-            pool.execute(Capability::Stt, &speech, ok_op)
+            pool.execute(Capability::Stt, &speech, None, ok_op)
                 .await
                 .result
                 .unwrap(),
@@ -825,11 +851,17 @@ mod tests {
         };
 
         assert_eq!(
-            pool.execute(CAP, &resolved, describe).await.result.unwrap(),
+            pool.execute(CAP, &resolved, None, describe)
+                .await
+                .result
+                .unwrap(),
             "llama-3.3-70b|terse"
         );
         assert_eq!(
-            pool.execute(CAP, &resolved, describe).await.result.unwrap(),
+            pool.execute(CAP, &resolved, None, describe)
+                .await
+                .result
+                .unwrap(),
             "gpt-4o-mini|verbose"
         );
     }
@@ -841,7 +873,11 @@ mod tests {
 
         let one = settings_with(1);
         let plan_one = plan(&one, CAP).unwrap();
-        assert!(pool.execute(CAP, &plan_one, ok_op).await.result.is_ok());
+        assert!(pool
+            .execute(CAP, &plan_one, None, ok_op)
+            .await
+            .result
+            .is_ok());
 
         state.start_cooldown("cred_0", CAP, MODEL, Duration::from_secs(600));
 
@@ -851,7 +887,7 @@ mod tests {
 
         let seen = std::sync::Mutex::new(Vec::new());
         let run = pool
-            .execute(CAP, &plan_two, |a: Attempt| {
+            .execute(CAP, &plan_two, None, |a: Attempt| {
                 seen.lock()
                     .unwrap()
                     .push((a.credential_id().to_string(), a.secret.clone()));
@@ -892,7 +928,7 @@ mod tests {
 
         let calls = AtomicUsize::new(0);
         let run = pool
-            .execute(CAP, &plan, |_| {
+            .execute(CAP, &plan, None, |_| {
                 calls.fetch_add(1, Ordering::SeqCst);
                 std::future::ready(Ok::<_, ApiError>(String::new()))
             })

@@ -13,7 +13,8 @@
       "sttOnly": "Speech only",
       "chatOnly": "Cleanup only",
       "keyless": "{{capability}}, no key needed"
-    }
+    },
+    "baseUrlPlaceholder": "http://localhost:11434/v1"
   },
   "cloudSpeech": {
     "title": "Cloud Speech",
@@ -116,7 +117,10 @@
     "strikes": "{{count}} strike",
     "strikes_other": "{{count}} strikes",
     "invalid": "Rejected",
-    "clearCooldown": "Clear cooldown"
+    "clearCooldown": "Clear cooldown",
+    "remainingDaysHours": "{{days}}d {{hours}}h",
+    "remainingHoursMinutes": "{{hours}}h {{minutes}}m",
+    "remainingMinutes": "{{minutes}}m"
   },
   "degraded": {
     "fellBackToLocal": "Cloud transcription unavailable, used the local model instead.",

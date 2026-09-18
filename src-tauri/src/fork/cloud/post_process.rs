@@ -13,8 +13,17 @@ use crate::fork::cloud::runtime::{
 };
 use crate::fork::cloud::{ApiError, Capability};
 use crate::settings::{AppSettings, LLMPrompt, APPLE_INTELLIGENCE_PROVIDER_ID};
-use log::debug;
+use log::{debug, warn};
+use std::time::{Duration, Instant};
 use tauri::AppHandle;
+
+/// One cleanup call. Upstream's single-key path has no timeout at all, which
+/// is survivable with one key because the user cancels. Across a rotation, a
+/// provider that accepts the connection and then goes quiet holds the dictation
+/// and the later keys never run at all.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
+/// Backstop on the whole rotation, so a row of slow keys cannot add up.
+const TOTAL_BUDGET: Duration = Duration::from_secs(120);
 
 pub enum PooledPostProcess {
     /// Run upstream's single-key path instead.
@@ -92,19 +101,42 @@ pub async fn run(
     let transcription = transcription.to_string();
 
     let run = pool
-        .execute(Capability::PostProcess, &resolved, |attempt: Attempt| {
-            let transcription = transcription.clone();
-            let instruction =
-                resolve_instruction(&attempt, &templates, default_prompt_id.as_deref());
-            async move {
-                let Some(instruction) = instruction else {
-                    return Err(ApiError::transport(
-                        "no cleanup instruction is set for this credential",
-                    ));
-                };
-                send(attempt, instruction, transcription).await
-            }
-        })
+        .execute(
+            Capability::PostProcess,
+            &resolved,
+            Some(Instant::now() + TOTAL_BUDGET),
+            |attempt: Attempt| {
+                let transcription = transcription.clone();
+                let instruction =
+                    resolve_instruction(&attempt, &templates, default_prompt_id.as_deref());
+                async move {
+                    let Some(instruction) = instruction else {
+                        return Err(ApiError::transport(
+                            "no cleanup instruction is set for this credential",
+                        ));
+                    };
+                    match tokio::time::timeout(
+                        REQUEST_TIMEOUT,
+                        send(attempt, instruction, transcription),
+                    )
+                    .await
+                    {
+                        Ok(result) => result,
+                        // 504 rather than a transport error: a stall is the
+                        // endpoint's fault and has to be able to bench the
+                        // entry, or every dictation pays the full wait again.
+                        Err(_) => Err(ApiError::from_status(
+                            504,
+                            None,
+                            format!(
+                                "cleanup did not answer within {}s",
+                                REQUEST_TIMEOUT.as_secs()
+                            ),
+                        )),
+                    }
+                }
+            },
+        )
         .await;
 
     apply_validity_updates(app, &run.validity_updates);
@@ -153,7 +185,12 @@ async fn send(
     // remembers the rejection, so asking every provider is safe.
     let disable_reasoning = true;
 
-    let raw = if attempt.provider.supports_structured_output {
+    // Tracks what the answer actually came back as, which is not the same as
+    // what the provider advertises: the fallback below downgrades one call
+    // without changing the provider's capability.
+    let mut structured = attempt.provider.supports_structured_output;
+
+    let raw = if structured {
         let schema = serde_json::json!({
             "type": "object",
             "properties": {
@@ -166,16 +203,46 @@ async fn send(
             "additionalProperties": false
         });
 
-        crate::llm_client::send_chat_completion_with_schema(
+        match crate::llm_client::send_chat_completion_with_schema(
             &attempt.provider,
             attempt.secret.clone(),
             attempt.model(),
-            transcription,
+            transcription.clone(),
             Some(system_prompt),
             Some(schema),
             disable_reasoning,
         )
-        .await?
+        .await
+        {
+            Ok(value) => value,
+            // A model that does not accept `response_format: json_schema`
+            // answers 400 or 422. Upstream retries those as a plain prompt;
+            // without the same retry the pool reads the rejection as the key's
+            // fault and strikes it, so every key on that provider ends up
+            // benched for something no key could have fixed.
+            //
+            // Only these two statuses. A 401, a 429 or a transport failure says
+            // something about the key or the network, and the pool has to see
+            // those unchanged or it cannot classify them.
+            Err(error) if matches!(error.status, Some(400) | Some(422)) => {
+                warn!(
+                    "Provider '{}' rejected structured output for model '{}': {error}. Retrying as a plain prompt.",
+                    attempt.provider.id,
+                    attempt.model()
+                );
+                structured = false;
+                let prompt = instruction.replace("${output}", &transcription);
+                crate::llm_client::send_chat_completion(
+                    &attempt.provider,
+                    attempt.secret.clone(),
+                    attempt.model(),
+                    prompt,
+                    disable_reasoning,
+                )
+                .await?
+            }
+            Err(error) => return Err(error),
+        }
     } else {
         let prompt = instruction.replace("${output}", &transcription);
         crate::llm_client::send_chat_completion(
@@ -190,13 +257,19 @@ async fn send(
 
     // An empty answer is a failed call, not a successful empty cleanup:
     // treating it as success would blank the dictation.
+    // Not `transport`: that takes no strike, so a model that always answers
+    // 200 with an empty body would never be benched.
     let Some(content) = raw else {
-        return Err(ApiError::transport("provider returned no content"));
+        return Err(ApiError::from_status(
+            502,
+            None,
+            "provider returned no content",
+        ));
     };
 
     let content = strip_think_block(&content);
 
-    if attempt.provider.supports_structured_output {
+    if structured {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(content) {
             if let Some(text) = json.get(TRANSCRIPTION_FIELD).and_then(|t| t.as_str()) {
                 return Ok(strip_invisible_chars(text));

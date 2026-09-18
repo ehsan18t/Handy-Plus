@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useState } from "react";
+import React, { useEffect, useId, useState, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { RefreshCcw } from "lucide-react";
 import { commands, type Capability } from "@/bindings";
@@ -42,6 +42,7 @@ export const ModelField: React.FC<ModelFieldProps> = ({
   // A different credential can arrive without a remount, and its models would
   // otherwise still be the previous key's.
   useEffect(() => {
+    generation.current += 1;
     setModels([]);
     setLoaded(false);
     setLoadError(null);
@@ -52,10 +53,17 @@ export const ModelField: React.FC<ModelFieldProps> = ({
     setDraft(value ?? "");
   }, [value]);
 
+  // Bumped whenever the credential changes, so a reply that arrives after the
+  // switch is dropped instead of offering the previous key's models under the
+  // new one.
+  const generation = useRef(0);
+
   const load = async () => {
+    const mine = ++generation.current;
     setLoading(true);
     setLoadError(null);
     const result = await commands.testCloudCredential(credentialId);
+    if (mine !== generation.current) return;
     setLoading(false);
     if (result.status === "ok") {
       setModels(result.data);

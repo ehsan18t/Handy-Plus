@@ -164,17 +164,20 @@ function App() {
   // the model rather than an exhausted key.
   useEffect(() => {
     const unlisten = events.cloudDegradedEvent.listen(({ payload }) => {
+      // `failed` means the dictation did not survive, and the pipeline already
+      // raises `transcription-error` for exactly that, with more detail. Both
+      // firing gave two error toasts for one failure. The event still reaches
+      // handy.log, which is where the reason is actually useful.
+      if (payload.outcome === "failed") return;
+
       const message =
         payload.outcome === "fell_back_to_local"
           ? t("fork:degraded.fellBackToLocal")
-          : payload.outcome === "raw_transcript"
-            ? t("fork:degraded.rawTranscript")
-            : t("fork:degraded.failed");
+          : t("fork:degraded.rawTranscript");
 
-      const notify = payload.outcome === "failed" ? toast.error : toast.warning;
       // A reason code, not prose: the backend has no locale. Its free-text
       // detail stays in handy.log.
-      notify(message, {
+      toast.warning(message, {
         description: t(`fork:degraded.reason.${payload.reason}`),
       });
     });

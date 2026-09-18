@@ -19,7 +19,7 @@ use bytes::Bytes;
 use log::{debug, info};
 use std::io::Cursor;
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::AppHandle;
 
 /// Groq and OpenAI both cap requests at 25 MB. At 32 KB/s that is about
@@ -192,27 +192,23 @@ pub async fn transcribe(
 
     let translate = settings.translate_to_english;
 
-    let pooled = tokio::time::timeout(
-        TOTAL_BUDGET,
-        pool.execute(Capability::Stt, &resolved, |attempt: Attempt| {
-            let audio = audio.clone();
-            async move { send(attempt, audio, translate).await }
-        }),
-    )
-    .await;
-
-    let run = match pooled {
-        Ok(run) => run,
-        Err(_) => {
-            return give_up(
-                CloudDegradeReason::TimedOut,
-                format!(
-                    "cloud transcription exceeded its {}s budget",
-                    TOTAL_BUDGET.as_secs()
-                ),
-            )
-        }
-    };
+    // The budget is handed to the loop rather than wrapped around it. A
+    // `timeout` here cancelled `execute` mid-flight and discarded its
+    // `PoolRun`, so a key a 401 had already marked invalid never reached
+    // settings and was tried and rejected again on the next dictation. Each
+    // request is separately bounded by `UPLOAD_TIMEOUT` on the client, so the
+    // loop cannot overrun the budget by more than one attempt.
+    let run = pool
+        .execute(
+            Capability::Stt,
+            &resolved,
+            Some(Instant::now() + TOTAL_BUDGET),
+            |attempt: Attempt| {
+                let audio = audio.clone();
+                async move { send(attempt, audio, translate).await }
+            },
+        )
+        .await;
 
     apply_validity_updates(app, &run.validity_updates);
 
@@ -286,7 +282,14 @@ async fn send(attempt: Attempt, audio: Bytes, translate: bool) -> Result<String,
     if text.is_empty() {
         // A failed call, not a silent recording: treating it as success would
         // swallow the dictation and give rotation nothing to react to.
-        return Err(ApiError::transport("provider returned an empty transcript"));
+        // Not `transport`: that classifies as Unreachable and takes no strike,
+        // so an endpoint answering 200 with nothing would never be benched and
+        // every dictation would walk the whole rotation before degrading.
+        return Err(ApiError::from_status(
+            502,
+            None,
+            "provider returned an empty transcript",
+        ));
     }
 
     Ok(text.to_string())

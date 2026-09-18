@@ -202,14 +202,23 @@ export const useDraftField = (
 };
 
 /** Human-readable remaining cooldown, e.g. "2h 5m". */
-export const formatRemaining = (seconds: number): string => {
+/**
+ * Takes `t` rather than hardcoding units. The abbreviations used to be literal
+ * "d"/"h"/"m", which the lint never caught because it only inspects JSX
+ * children, so this string stayed English in all 25 locales while the cooldown
+ * picker beside it was translated.
+ */
+export const formatRemaining = (
+  seconds: number,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string => {
   if (seconds <= 0) return "";
   const days = Math.floor(seconds / 86_400);
   const hours = Math.floor((seconds % 86_400) / 3_600);
   const minutes = Math.floor((seconds % 3_600) / 60);
 
-  if (days > 0) return `${days}d ${hours}h`;
-  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (days > 0) return t("status.remainingDaysHours", { days, hours });
+  if (hours > 0) return t("status.remainingHoursMinutes", { hours, minutes });
   // Round up so a live countdown never displays "0m" while still benched.
-  return `${Math.max(1, minutes)}m`;
+  return t("status.remainingMinutes", { minutes: Math.max(1, minutes) });
 };
