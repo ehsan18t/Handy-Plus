@@ -57,7 +57,9 @@
       "untested": "Untested",
       "valid": "Working",
       "invalid": "Rejected"
-    }
+    },
+    "sharedQuota": "One quota for both features",
+    "sharedQuotaDescription": "Turn on when this provider meters speech and cleanup from the same allowance, so hitting the limit in one pauses the key for both. Groq meters them separately; leave it off there."
   },
   "binding": {
     "enable": "Enable",
@@ -120,7 +122,8 @@
     "clearCooldown": "Clear cooldown",
     "remainingDaysHours": "{{days}}d {{hours}}h",
     "remainingHoursMinutes": "{{hours}}h {{minutes}}m",
-    "remainingMinutes": "{{minutes}}m"
+    "remainingMinutes": "{{minutes}}m",
+    "coolingDownShared": "Cooling down {{time}} (shared quota)"
   },
   "degraded": {
     "fellBackToLocal": "Cloud transcription unavailable, used the local model instead.",

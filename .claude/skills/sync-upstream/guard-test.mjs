@@ -44,6 +44,8 @@ const MUTATIONS = [
     "src-tauri/src/fork/cloud/stt.rs", "report_reqwest_error"],
   ["transport failures are classified non-striking",
     "src-tauri/src/fork/cloud/error.rs", "FailureClass::Unreachable"],
+  ["a shared quota benches every bucket on that credential",
+    "src-tauri/src/fork/cloud/pool.rs", "shared_cooldowns()"],
   ["the save path de-duplicates on credential AND model",
     "src-tauri/src/fork/cloud/binding.rs", "seen.insert((entry.credential_id"],
   ["deleting a template clears entries that named it",

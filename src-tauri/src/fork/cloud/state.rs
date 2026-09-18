@@ -223,6 +223,33 @@ impl RotationStateStore {
         .unwrap_or_default()
     }
 
+    /// The latest cooldown deadline per credential, across every capability and
+    /// model.
+    ///
+    /// Only consulted for credentials whose quota is shared. For those, one
+    /// bucket running out means the account has, so sending the request anyway
+    /// spends a round-trip on an answer already known to be 429.
+    pub fn shared_cooldowns(&self) -> HashMap<String, i64> {
+        self.with_connection(|conn| {
+            let mut statement = conn.prepare_cached(
+                "SELECT credential_id, MAX(cooldown_until_ms) FROM credential_state
+                  WHERE cooldown_until_ms IS NOT NULL
+                  GROUP BY credential_id",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })?;
+
+            let mut deadlines = HashMap::new();
+            for row in rows {
+                let (credential_id, until) = row?;
+                deadlines.insert(credential_id, until);
+            }
+            Ok(deadlines)
+        })
+        .unwrap_or_default()
+    }
+
     #[cfg(test)]
     pub fn pair_state(
         &self,

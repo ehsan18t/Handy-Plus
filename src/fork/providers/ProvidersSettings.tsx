@@ -12,6 +12,7 @@ import { Dialog } from "@/components/ui/Dialog";
 import { Input } from "@/components/ui/Input";
 import { SettingsGroup } from "@/components/ui/SettingsGroup";
 import { Alert } from "@/components/ui/Alert";
+import { ToggleSwitch } from "@/components/ui/ToggleSwitch";
 import Badge from "@/components/ui/Badge";
 import {
   providerRequiresCredential,
@@ -25,6 +26,8 @@ interface DraftState {
   providerId: string;
   label: string;
   secret: string;
+  /** Whether this account meters speech and cleanup from one allowance. */
+  sharedQuota: boolean;
 }
 
 export const ProvidersSettings: React.FC = () => {
@@ -104,11 +107,13 @@ export const ProvidersSettings: React.FC = () => {
           label,
           draft.providerId,
           draft.secret.trim() ? draft.secret : null,
+          draft.sharedQuota,
         )
       : await commands.addCloudCredential(
           label,
           draft.providerId,
           draft.secret,
+          draft.sharedQuota,
         );
 
     if (result.status === "error") {
@@ -222,6 +227,7 @@ export const ProvidersSettings: React.FC = () => {
                                 providerId: credential.provider_id,
                                 label: credential.label,
                                 secret: "",
+                                sharedQuota: credential.shared_quota ?? false,
                               })
                             }
                           >
@@ -292,6 +298,7 @@ export const ProvidersSettings: React.FC = () => {
                           providerId: provider.id,
                           label: "",
                           secret: "",
+                          sharedQuota: false,
                         })
                       }
                     >
@@ -402,6 +409,18 @@ export const ProvidersSettings: React.FC = () => {
                 </span>
               </label>
             )}
+
+            {/* On the credential rather than on the two feature pages: the
+                allowance belongs to the account this key represents, two keys
+                on one provider can be on different plans, and two toggles that
+                disagreed would have no correct meaning. */}
+            <ToggleSwitch
+              checked={draft.sharedQuota}
+              onChange={(sharedQuota) => setDraft({ ...draft, sharedQuota })}
+              label={t("credentials.sharedQuota")}
+              description={t("credentials.sharedQuotaDescription")}
+              descriptionMode="inline"
+            />
 
             {!needsKey && (
               <Alert variant="info">{t("credentials.noKeyNeeded")}</Alert>

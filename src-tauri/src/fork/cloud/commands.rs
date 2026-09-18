@@ -28,6 +28,9 @@ pub struct CredentialCapabilityStatus {
     /// A revoked key is skipped on every request but has no cooldown and no
     /// strikes, so without this it would read as healthy here.
     pub validity: CredentialValidity,
+    /// The account meters both capabilities together, so a cooldown shown here
+    /// may have been earned by the other one.
+    pub shares_quota: bool,
 }
 
 #[tauri::command]
@@ -37,6 +40,7 @@ pub fn add_cloud_credential(
     label: String,
     provider_id: String,
     secret: String,
+    shared_quota: bool,
 ) -> Result<String, String> {
     let label = label.trim().to_string();
     if label.is_empty() {
@@ -55,9 +59,9 @@ pub fn add_cloud_credential(
     }
 
     let id = new_credential_id(&settings.cloud_credentials);
-    settings
-        .cloud_credentials
-        .push(Credential::new(&id, label, provider_id));
+    let mut credential = Credential::new(&id, label, provider_id);
+    credential.shared_quota = shared_quota;
+    settings.cloud_credentials.push(credential);
     settings.cloud_credential_secrets.insert(id.clone(), secret);
     write_settings(&app, settings);
 
@@ -77,6 +81,7 @@ pub fn update_cloud_credential(
     label: Option<String>,
     provider_id: Option<String>,
     secret: Option<String>,
+    shared_quota: Option<bool>,
 ) -> Result<(), String> {
     let mut settings = get_settings(&app);
 
@@ -103,6 +108,10 @@ pub fn update_cloud_credential(
         .is_some_and(|next| next != &credential.provider_id);
     if let Some(provider_id) = provider_id {
         credential.provider_id = provider_id;
+    }
+
+    if let Some(shared_quota) = shared_quota {
+        credential.shared_quota = shared_quota;
     }
 
     let secret_changed = secret.is_some();
@@ -252,6 +261,14 @@ pub fn get_cloud_credential_status(
 
     let now = crate::fork::cloud::now_ms();
     let states = pool.state().states_for(capability, window);
+    // Same overlay the pool applies: for a shared-quota account a bench earned
+    // by the other capability is real here too, and showing "available" for a
+    // key that is about to be skipped is the kind of lie that costs an evening.
+    let shared = if settings.cloud_credentials.iter().any(|c| c.shared_quota) {
+        pool.state().shared_cooldowns()
+    } else {
+        std::collections::HashMap::new()
+    };
 
     // Per entry rather than per credential: one key serving two models has two
     // independent quotas, so it can be paused for one and ready for the other.
@@ -259,16 +276,22 @@ pub fn get_cloud_credential_status(
         .entries
         .iter()
         .map(|entry| {
-            let state = states
+            let mut state = states
                 .get(&(entry.credential_id.clone(), entry.model.clone()))
                 .cloned()
                 .unwrap_or_default();
-            let validity = settings
+            let credential = settings
                 .cloud_credentials
                 .iter()
-                .find(|c| c.id == entry.credential_id)
-                .map(|c| c.validity)
-                .unwrap_or_default();
+                .find(|c| c.id == entry.credential_id);
+            let validity = credential.map(|c| c.validity).unwrap_or_default();
+            let shares_quota = credential.is_some_and(|c| c.shared_quota);
+            if shares_quota {
+                if let Some(&until) = shared.get(&entry.credential_id) {
+                    state.cooldown_until_ms =
+                        Some(state.cooldown_until_ms.map_or(until, |own| own.max(until)));
+                }
+            }
 
             CredentialCapabilityStatus {
                 credential_id: entry.credential_id.clone(),
@@ -281,6 +304,7 @@ pub fn get_cloud_credential_status(
                 recent_strikes: state.recent_strikes,
                 last_used_ms: state.last_used_ms,
                 validity,
+                shares_quota,
             }
         })
         .collect())

@@ -27,6 +27,14 @@ inside a window bench the key for a cooldown.
 Selection is either round robin, which follows the order you arranged, or least
 recently used, which spreads load and survives a restart.
 
+Quota buckets are per credential, per capability and per model, because that is
+how providers meter: a Groq key rate limited for cleanup keeps serving speech.
+Providers that meter both from one account allowance exist too, so a credential
+can be marked as sharing its quota, and then a bench anywhere applies
+everywhere. Off by default: assuming separate costs one request against a key
+that turns out to be spent, assuming shared benches a feature that still had
+allowance.
+
 **Cloud speech-to-text.** Recordings can be transcribed by a provider instead of
 the local model. It is a toggle rather than an entry in the model selector.
 Exhausting the rotation falls back to the local model, or surfaces the failure if

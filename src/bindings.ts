@@ -716,9 +716,9 @@ async rescanLocalModels() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async addCloudCredential(label: string, providerId: string, secret: string) : Promise<Result<string, string>> {
+async addCloudCredential(label: string, providerId: string, secret: string, sharedQuota: boolean) : Promise<Result<string, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("add_cloud_credential", { label, providerId, secret }) };
+    return { status: "ok", data: await TAURI_INVOKE("add_cloud_credential", { label, providerId, secret, sharedQuota }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -731,9 +731,9 @@ async addCloudCredential(label: string, providerId: string, secret: string) : Pr
  * or provider change without ever round-tripping the secret through the
  * frontend.
  */
-async updateCloudCredential(id: string, label: string | null, providerId: string | null, secret: string | null) : Promise<Result<null, string>> {
+async updateCloudCredential(id: string, label: string | null, providerId: string | null, secret: string | null, sharedQuota: boolean | null) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("update_cloud_credential", { id, label, providerId, secret }) };
+    return { status: "ok", data: await TAURI_INVOKE("update_cloud_credential", { id, label, providerId, secret, sharedQuota }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1178,7 +1178,18 @@ export type Credential = {
  * Bindings reference this, never the label, so renaming cannot detach a
  * credential from its rotation state.
  */
-id: string; label: string; provider_id: string; validity?: CredentialValidity }
+id: string; label: string; provider_id: string; validity?: CredentialValidity; 
+/**
+ * Whether this account meters speech and cleanup from one allowance.
+ * 
+ * Off by default, which keeps every (capability, model) bucket independent.
+ * That is right for Groq, whose speech and chat quotas are separate, and
+ * being wrong in that direction costs one request against a key that turns
+ * out to be exhausted. Being wrong the other way benches a feature that
+ * still had allowance left, which is worse, so this is opt-in rather than
+ * guessed from the provider.
+ */
+shared_quota?: boolean }
 /**
  * Not merged into the credentials list: a key can cool down for chat while
  * serving speech, so a single badge would be a lie.
@@ -1197,7 +1208,12 @@ cooldown_remaining_secs: number; recent_strikes: number; last_used_ms: number | 
  * A revoked key is skipped on every request but has no cooldown and no
  * strikes, so without this it would read as healthy here.
  */
-validity: CredentialValidity }
+validity: CredentialValidity; 
+/**
+ * The account meters both capabilities together, so a cooldown shown here
+ * may have been earned by the other one.
+ */
+shares_quota: boolean }
 /**
  * Key-level health, as shown in the credentials list.
  * 

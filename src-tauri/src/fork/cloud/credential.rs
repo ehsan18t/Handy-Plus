@@ -31,6 +31,16 @@ pub struct Credential {
     pub provider_id: String,
     #[serde(default)]
     pub validity: CredentialValidity,
+    /// Whether this account meters speech and cleanup from one allowance.
+    ///
+    /// Off by default, which keeps every (capability, model) bucket independent.
+    /// That is right for Groq, whose speech and chat quotas are separate, and
+    /// being wrong in that direction costs one request against a key that turns
+    /// out to be exhausted. Being wrong the other way benches a feature that
+    /// still had allowance left, which is worse, so this is opt-in rather than
+    /// guessed from the provider.
+    #[serde(default)]
+    pub shared_quota: bool,
 }
 
 impl Credential {
@@ -44,6 +54,7 @@ impl Credential {
             label: label.into(),
             provider_id: provider_id.into(),
             validity: CredentialValidity::Untested,
+            shared_quota: false,
         }
     }
 }

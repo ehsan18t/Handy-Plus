@@ -152,6 +152,14 @@ const INVARIANTS = [
     why: "Striking them benched every key for six hours after three offline dictations.",
   },
   {
+    name: "a shared quota benches every bucket on that credential",
+    file: "src-tauri/src/fork/cloud/pool.rs",
+    // The call alone is not enough: the deadlines have to be merged into the
+    // per-candidate state or the query runs and changes nothing.
+    want: /shared_cooldowns().*cooldown_until_ms = Some/,
+    why: "A provider that meters speech and cleanup from one allowance would keep being sent requests it has already refused, burning a strike per dictation on a key that is simply out.",
+  },
+  {
     name: "the save path de-duplicates on credential AND model",
     file: "src-tauri/src/fork/cloud/binding.rs",
     want: /seen\.insert\(\(entry\.credential_id\.clone\(\), entry\.model/,

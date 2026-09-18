@@ -210,12 +210,20 @@ export const RotationEditor: React.FC<RotationEditorProps> = ({
                 : invalid
                   ? t("status.invalid")
                   : cooling
-                    ? t("status.coolingDown", {
-                        time: formatRemaining(
-                          status?.cooldown_remaining_secs ?? 0,
-                          t,
-                        ),
-                      })
+                    ? t(
+                        // A bench a shared-quota account earned on the other
+                        // feature is real here, and reads as unexplained
+                        // without saying so.
+                        status?.shares_quota
+                          ? "status.coolingDownShared"
+                          : "status.coolingDown",
+                        {
+                          time: formatRemaining(
+                            status?.cooldown_remaining_secs ?? 0,
+                            t,
+                          ),
+                        },
+                      )
                     : status?.recent_strikes
                       ? t("status.strikes", { count: status.recent_strikes })
                       : t("status.available")}

@@ -8,13 +8,14 @@
 
 use crate::fork::cloud::binding::RotationEntry;
 use crate::fork::cloud::now_ms;
+use crate::fork::cloud::state::{PairKey, PairState};
 use crate::fork::cloud::{
     ApiError, Capability, CapabilityBinding, CredentialValidity, FailureClass, RotationPolicy,
     RotationStateStore,
 };
 use crate::settings::{AppSettings, PostProcessProvider};
 use log::{debug, info, warn};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -30,6 +31,9 @@ pub struct Attempt {
     pub provider: PostProcessProvider,
     pub credential_label: String,
     pub secret: String,
+    /// This account meters both capabilities from one allowance, so a bench on
+    /// either applies to both. See `Credential::shared_quota`.
+    pub shared_quota: bool,
     /// Speech only. Empty means auto-detect.
     pub language: String,
     /// Speech only: shared vocabulary bias.
@@ -193,6 +197,7 @@ pub fn plan(settings: &AppSettings, capability: Capability) -> Result<PoolPlan, 
         candidates.push(Attempt {
             entry: entry.clone(),
             credential_label: credential.label.clone(),
+            shared_quota: credential.shared_quota,
             provider: provider.clone(),
             secret,
             language: binding.language.clone(),
@@ -232,11 +237,47 @@ impl CredentialPool {
         &self.state
     }
 
+    /// Per-candidate state, with the shared-quota overlay applied.
+    ///
+    /// A credential marked shared is benched by any of its buckets, not just the
+    /// one for this capability and model, because they all draw on one
+    /// allowance. The extra query runs only when some candidate actually
+    /// declares it, which is the uncommon case.
+    fn candidate_states(
+        &self,
+        capability: Capability,
+        plan: &PoolPlan,
+    ) -> HashMap<PairKey, PairState> {
+        let mut states = self
+            .state
+            .states_for(capability, plan.binding.strike_window());
+        if !plan.candidates.iter().any(|c| c.shared_quota) {
+            return states;
+        }
+
+        let shared = self.state.shared_cooldowns();
+        for candidate in plan.candidates.iter().filter(|c| c.shared_quota) {
+            let Some(&until) = shared.get(&candidate.entry.credential_id) else {
+                continue;
+            };
+            let state = states
+                .entry((
+                    candidate.entry.credential_id.clone(),
+                    candidate.entry.model.clone(),
+                ))
+                .or_default();
+            // The later of the two: a bench earned here is not shortened by a
+            // shorter one earned elsewhere on the same account.
+            state.cooldown_until_ms =
+                Some(state.cooldown_until_ms.map_or(until, |own| own.max(until)));
+        }
+        states
+    }
+
     /// Indices into `plan.candidates`, in the order they should be tried.
     fn ordered(&self, capability: Capability, plan: &PoolPlan) -> Vec<usize> {
-        let window = plan.binding.strike_window();
         let now = now_ms();
-        let states = self.state.states_for(capability, window);
+        let states = self.candidate_states(capability, plan);
 
         let mut eligible: Vec<(usize, Option<i64>)> = Vec::new();
         for (index, candidate) in plan.candidates.iter().enumerate() {
@@ -294,9 +335,7 @@ impl CredentialPool {
     /// on the path that matters.
     fn soonest_cooldown(&self, capability: Capability, plan: &PoolPlan) -> Option<Duration> {
         let now = now_ms();
-        let states = self
-            .state
-            .states_for(capability, plan.binding.strike_window());
+        let states = self.candidate_states(capability, plan);
         plan.candidates
             .iter()
             .filter_map(|candidate| {
@@ -942,5 +981,51 @@ mod tests {
             }
             other => panic!("expected AllCoolingDown, got {other:?}"),
         }
+    }
+    /// Opting a credential into a shared quota is the whole point of the flag:
+    /// for a provider that meters both features from one allowance, a 429 on
+    /// cleanup means speech is out too, and sending the request anyway spends a
+    /// round-trip on an answer already known.
+    #[tokio::test]
+    async fn a_shared_quota_key_benched_on_one_capability_is_benched_on_the_other() {
+        let (pool, state) = pool();
+        let mut settings = settings_with(1);
+        settings.cloud_credentials[0].shared_quota = true;
+        settings.cloud_bindings.stt = settings.cloud_bindings.post_process.clone();
+
+        // Earned by cleanup, on cleanup's own model.
+        state.start_cooldown("cred_0", CAP, MODEL, Duration::from_secs(600));
+
+        let speech = plan(&settings, Capability::Stt).unwrap();
+        let calls = AtomicUsize::new(0);
+        let run = pool
+            .execute(Capability::Stt, &speech, None, |_| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(Ok::<_, ApiError>(String::new()))
+            })
+            .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "speech must not be tried");
+        assert!(matches!(run.result, Err(PoolError::AllCoolingDown { .. })));
+    }
+
+    /// The default stays separate, which is right for Groq and is what makes
+    /// the flag safe to leave off: being wrong this way costs one request, not
+    /// a working feature.
+    #[tokio::test]
+    async fn a_separate_quota_key_keeps_serving_the_other_capability() {
+        let (pool, state) = pool();
+        let mut settings = settings_with(1);
+        assert!(
+            !settings.cloud_credentials[0].shared_quota,
+            "separate is the default"
+        );
+        settings.cloud_bindings.stt = settings.cloud_bindings.post_process.clone();
+
+        state.start_cooldown("cred_0", CAP, MODEL, Duration::from_secs(600));
+
+        let speech = plan(&settings, Capability::Stt).unwrap();
+        let run = pool.execute(Capability::Stt, &speech, None, ok_op).await;
+        assert_eq!(run.result.unwrap(), "cred_0");
     }
 }
