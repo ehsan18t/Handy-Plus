@@ -124,6 +124,7 @@
     "failed": "Cloud transcription failed.",
     "reason": {
       "not_configured": "No usable key is set up for this.",
+      "all_credentials_cooling_down": "Every key is cooling down. None was contacted.",
       "all_credentials_failed": "Every key was tried and every one failed.",
       "recording_too_large": "The recording is too long to upload.",
       "timed_out": "The provider took too long to answer.",

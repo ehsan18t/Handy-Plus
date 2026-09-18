@@ -1148,7 +1148,13 @@ export type CloudDegradeOutcome = "fell_back_to_local" | "raw_transcript" |
 /**
  * Translatable cause. One variant per thing the user could act on.
  */
-export type CloudDegradeReason = "not_configured" | "all_credentials_failed" | "recording_too_large" | "timed_out" | "unexpected"
+export type CloudDegradeReason = "not_configured" | 
+/**
+ * Keys are configured and fine, but all of them are benched right now, so
+ * nothing was sent. Separate from AllCredentialsFailed because the two
+ * need opposite reactions: wait, versus go and look at your keys.
+ */
+"all_credentials_cooling_down" | "all_credentials_failed" | "recording_too_large" | "timed_out" | "unexpected"
 /**
  * Emitted whenever output quality dropped. Silent degradation is worse than
  * failure: the user would blame the model instead of an exhausted key.

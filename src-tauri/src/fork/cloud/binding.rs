@@ -143,8 +143,15 @@ impl CapabilityBinding {
             if entry.prompt_id.as_ref().is_some_and(|id| !known_prompt(id)) {
                 entry.prompt_id = None;
             }
+            // Normalise here rather than comparing trimmed: this used to
+            // de-duplicate on the trimmed model while `plan` compared the raw
+            // one, so a model pasted with trailing whitespace was dropped on
+            // save even though the pool would have accepted it. Storing one
+            // canonical form makes the two agree by construction, and stops the
+            // whitespace reaching the provider.
+            entry.model = entry.model.trim().to_string();
             known_credential(&entry.credential_id)
-                && seen.insert((entry.credential_id.clone(), entry.model.trim().to_string()))
+                && seen.insert((entry.credential_id.clone(), entry.model.clone()))
         });
     }
 }
@@ -257,5 +264,44 @@ mod tests {
         assert_eq!(binding.entries[0].prompt_id, None);
         assert_eq!(binding.cooldown_secs, DEFAULT_COOLDOWN_SECS);
         assert!(binding.fallback_enabled);
+    }
+    #[test]
+    fn a_model_with_stray_whitespace_does_not_collide_with_a_real_second_entry() {
+        // `prune_entries` de-duplicated on the trimmed model while `plan`
+        // compared the raw one, so " gpt-4 " and "gpt-4" were one entry on save
+        // and two to the pool. Normalising on save makes them agree.
+        let mut binding = CapabilityBinding {
+            entries: vec![
+                RotationEntry {
+                    credential_id: "a".into(),
+                    model: "  gpt-4  ".into(),
+                    prompt_id: None,
+                },
+                RotationEntry {
+                    credential_id: "a".into(),
+                    model: "gpt-4".into(),
+                    prompt_id: None,
+                },
+                RotationEntry {
+                    credential_id: "b".into(),
+                    model: " gpt-4 ".into(),
+                    prompt_id: None,
+                },
+            ],
+            ..Default::default()
+        };
+
+        binding.prune_entries(|_| true, |_| true);
+
+        assert_eq!(binding.entries.len(), 2, "the true duplicate is dropped");
+        assert!(
+            binding.entries.iter().all(|e| e.model == "gpt-4"),
+            "models are stored in one canonical form: {:?}",
+            binding.entries.iter().map(|e| &e.model).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            binding.entries[1].credential_id, "b",
+            "a different key survives"
+        );
     }
 }

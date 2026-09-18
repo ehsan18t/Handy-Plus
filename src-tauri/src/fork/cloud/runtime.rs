@@ -37,6 +37,10 @@ pub enum CloudDegradeOutcome {
 #[serde(rename_all = "snake_case")]
 pub enum CloudDegradeReason {
     NotConfigured,
+    /// Keys are configured and fine, but all of them are benched right now, so
+    /// nothing was sent. Separate from AllCredentialsFailed because the two
+    /// need opposite reactions: wait, versus go and look at your keys.
+    AllCredentialsCoolingDown,
     AllCredentialsFailed,
     RecordingTooLarge,
     TimedOut,
@@ -47,6 +51,7 @@ impl CloudDegradeReason {
     pub fn for_pool_error(error: &crate::fork::cloud::PoolError) -> Self {
         match error {
             crate::fork::cloud::PoolError::NotConfigured(_) => Self::NotConfigured,
+            crate::fork::cloud::PoolError::AllCoolingDown { .. } => Self::AllCredentialsCoolingDown,
             crate::fork::cloud::PoolError::Exhausted { .. } => Self::AllCredentialsFailed,
         }
     }

@@ -61,6 +61,13 @@ impl fmt::Debug for Attempt {
 #[derive(Debug)]
 pub enum PoolError {
     NotConfigured(&'static str),
+    /// Keys are configured and usable, but every one is benched right now, so
+    /// nothing was sent. Distinct from `Exhausted` on purpose: telling someone
+    /// every key failed when none was tried sends them looking at the wrong key,
+    /// which is exactly the wrong place.
+    AllCoolingDown {
+        retry_in: Option<Duration>,
+    },
     Exhausted {
         attempted: usize,
         last_error: Option<ApiError>,
@@ -71,6 +78,14 @@ impl fmt::Display for PoolError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PoolError::NotConfigured(what) => write!(f, "not configured: {what}"),
+            PoolError::AllCoolingDown { retry_in } => match retry_in {
+                Some(wait) => write!(
+                    f,
+                    "every configured credential is cooling down; the first is free in {}s",
+                    wait.as_secs()
+                ),
+                None => write!(f, "every configured credential is cooling down"),
+            },
             PoolError::Exhausted {
                 attempted,
                 last_error,
@@ -273,6 +288,27 @@ impl CredentialPool {
         eligible.into_iter().map(|(index, _)| index).collect()
     }
 
+    /// How long until the first benched candidate is usable again.
+    ///
+    /// Only read when nothing is eligible, so the extra state read costs nothing
+    /// on the path that matters.
+    fn soonest_cooldown(&self, capability: Capability, plan: &PoolPlan) -> Option<Duration> {
+        let now = now_ms();
+        let states = self
+            .state
+            .states_for(capability, plan.binding.strike_window());
+        plan.candidates
+            .iter()
+            .filter_map(|candidate| {
+                states.get(&(
+                    candidate.entry.credential_id.clone(),
+                    candidate.entry.model.clone(),
+                ))
+            })
+            .filter_map(|state| state.cooldown_remaining(now))
+            .min()
+    }
+
     /// Try eligible credentials until one succeeds, each at most once. Without
     /// that cap a provider-wide outage becomes an infinite retry loop. The
     /// chosen credential serves the entire call including any retries the
@@ -292,10 +328,11 @@ impl CredentialPool {
         let order = self.ordered(capability, plan);
 
         if order.is_empty() {
+            // Candidates existed (`plan` errors otherwise) and none is eligible,
+            // so every one is benched. Nothing was sent to any provider.
             return PoolRun {
-                result: Err(PoolError::Exhausted {
-                    attempted: 0,
-                    last_error: None,
+                result: Err(PoolError::AllCoolingDown {
+                    retry_in: self.soonest_cooldown(capability, plan),
                 }),
                 validity_updates,
             };
@@ -749,10 +786,9 @@ mod tests {
             .await;
 
         assert_eq!(calls.load(Ordering::SeqCst), 0, "nothing should be called");
-        assert!(matches!(
-            run.result,
-            Err(PoolError::Exhausted { attempted: 0, .. })
-        ));
+        // Benched, not failed: nothing was sent, so saying every key failed
+        // would point the user at a key that was never contacted.
+        assert!(matches!(run.result, Err(PoolError::AllCoolingDown { .. })));
 
         let speech = plan(&settings, Capability::Stt).unwrap();
         assert_eq!(
@@ -796,5 +832,79 @@ mod tests {
             pool.execute(CAP, &resolved, describe).await.result.unwrap(),
             "gpt-4o-mini|verbose"
         );
+    }
+    /// The reported bug: key 1 gets benched, key 2 is added afterwards, and the
+    /// next request must go to key 2 carrying key 2's secret.
+    #[tokio::test]
+    async fn a_key_added_after_another_was_benched_is_the_one_that_serves() {
+        let (pool, state) = pool();
+
+        let one = settings_with(1);
+        let plan_one = plan(&one, CAP).unwrap();
+        assert!(pool.execute(CAP, &plan_one, ok_op).await.result.is_ok());
+
+        state.start_cooldown("cred_0", CAP, MODEL, Duration::from_secs(600));
+
+        let two = settings_with(2);
+        let plan_two = plan(&two, CAP).unwrap();
+        assert_eq!(plan_two.candidates.len(), 2, "both keys are candidates");
+
+        let seen = std::sync::Mutex::new(Vec::new());
+        let run = pool
+            .execute(CAP, &plan_two, |a: Attempt| {
+                seen.lock()
+                    .unwrap()
+                    .push((a.credential_id().to_string(), a.secret.clone()));
+                std::future::ready(Ok::<_, ApiError>(a.credential_id().to_string()))
+            })
+            .await;
+
+        let seen = seen.into_inner().unwrap();
+        assert_eq!(
+            seen.len(),
+            1,
+            "the benched key must not be called: {seen:?}"
+        );
+        assert_eq!(
+            seen[0],
+            ("cred_1".to_string(), "secret-1".to_string()),
+            "the new key must serve, with its own secret"
+        );
+        assert_eq!(run.result.unwrap(), "cred_1");
+    }
+    /// Nothing is sent when every key is benched, and the error says exactly
+    /// that. Reporting "all credentials failed" here sends the user to inspect a
+    /// key that was never contacted.
+    #[tokio::test]
+    async fn every_key_benched_reports_cooling_down_not_failure() {
+        let settings = settings_with(2);
+        let plan = plan(&settings, CAP).unwrap();
+        let (pool, state) = pool();
+
+        for index in 0..2 {
+            state.start_cooldown(
+                &format!("cred_{index}"),
+                CAP,
+                MODEL,
+                Duration::from_secs(600),
+            );
+        }
+
+        let calls = AtomicUsize::new(0);
+        let run = pool
+            .execute(CAP, &plan, |_| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(Ok::<_, ApiError>(String::new()))
+            })
+            .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "no provider was contacted");
+        match run.result {
+            Err(PoolError::AllCoolingDown { retry_in }) => {
+                let wait = retry_in.expect("the remaining cooldown is reported");
+                assert!(wait.as_secs() > 0 && wait.as_secs() <= 600, "{wait:?}");
+            }
+            other => panic!("expected AllCoolingDown, got {other:?}"),
+        }
     }
 }
