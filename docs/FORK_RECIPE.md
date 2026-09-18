@@ -18,6 +18,24 @@ Rule 2 is the one that decays, so it is checked. `fork-guard.mjs verify` fails i
 
 Why one line and not five: when upstream rewrites the function around your call, a one-line conflict is mechanical (keep their code, keep your line). A twenty-line conflict is a judgement call, and it arrives six months later when you no longer remember what the block was for. Judgement calls under time pressure are where a fork quietly loses a feature.
 
+## The exception: finishing something upstream already half has
+
+The two rules assume the fork is adding what upstream does not have. Occasionally it is finishing what upstream already half has, using only upstream's data and upstream's concepts. The History page's Post Process tab is the first case: `post_processed_text` has been a column on `transcription_history` since an early migration, and the page simply never rendered it.
+
+For that case both rules invert. Write the change where upstream would have written it, inline, and accept the footprint.
+
+The reason is drift, not conflict. Fork-owning a copy of an upstream component buys zero conflicts and zero of upstream's fixes to it, and nothing tells you which fixes you missed. `HistorySettings.tsx` took 13 upstream commits in the last 300. A conflict is loud. Drift is silent, and silent is worse.
+
+Three things have to hold before taking the exception:
+
+1. The feature uses no fork type, no fork module and no fork setting. The moment it needs one, it is fork code and rule 1 applies again.
+2. The hunks are insertions rather than reflows, so upstream's own edits around them still merge.
+3. It is one self-contained commit, so it cherry-picks to an upstream PR without surgery.
+
+If a command lands in an upstream module this way, give it its own invariant in `fork-guard.mjs` and a matching `guard-test.mjs` mutation. `EXPECTED_COMMANDS` matches `fork::hooks::` names only, so nothing else would notice a merge in `lib.rs` dropping the registration.
+
+Strings still go in `fork.json`, never `translation.json`. `scripts/check-translations.ts` validates only `translation.json`, so an English-only key there fails the gate for all 24 other locales. Moving them is part of preparing the PR, not part of writing the feature.
+
 ## Where things go
 
 | What                            | Where                                                                   |

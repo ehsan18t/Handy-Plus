@@ -196,6 +196,16 @@ const INVARIANTS = [
     why: "Nothing in src-tauri/src/fork/cloud/ is compiled without it.",
   },
   {
+    // Not in EXPECTED_COMMANDS: that list matches `fork::hooks::` names, and this
+    // command deliberately lives in upstream's own history module (see the
+    // exception in docs/FORK_RECIPE.md). Nothing else would notice a merge in
+    // lib.rs dropping the line.
+    name: "the history regenerate command stays registered",
+    file: "src-tauri/src/lib.rs",
+    want: /commands::history::regenerate_history_entry_post_process/,
+    why: "The Post Process tab's regenerate button invokes it. Unregistered, the button fails at runtime only.",
+  },
+  {
     name: "the degraded event is registered",
     file: "src-tauri/src/lib.rs",
     want: /CloudDegradedEvent/,
