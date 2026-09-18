@@ -27,6 +27,14 @@ interface DropdownProps {
 }
 
 const MENU_MAX_HEIGHT = 240;
+// Fixed from the very first paint, and hidden until measured. A menu that
+// renders static inside <body> measures the full viewport width, and the clamp
+// in `position` would read that as "too wide" and pin it to the left gutter,
+// detached from its trigger, on every first open.
+const HIDDEN_MENU: React.CSSProperties = {
+  position: "fixed",
+  visibility: "hidden",
+};
 const GAP = 4;
 
 export const Dropdown: React.FC<DropdownProps> = ({
@@ -43,7 +51,10 @@ export const Dropdown: React.FC<DropdownProps> = ({
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const [menuStyle, setMenuStyle] = useState<React.CSSProperties>({});
+  const [menuStyle, setMenuStyle] = useState<React.CSSProperties>(HIDDEN_MENU);
+  // Width the current placement was computed from, so the observer below can
+  // tell a real width change from its own echo.
+  const placedWidth = useRef(0);
 
   // Positioned against the viewport rather than the trigger's offset parent.
   // Absolute placement kept the menu inside the settings scroll container, which
@@ -60,7 +71,10 @@ export const Dropdown: React.FC<DropdownProps> = ({
 
     // `minWidth`, not `width`: a caller can widen the menu past its trigger
     // with `menuClassName`, and an inline width would override that class.
-    const menuWidth = menuRef.current?.offsetWidth ?? rect.width;
+    // Never narrower than the trigger, so a measurement taken before that class
+    // has applied cannot make the clamp overcorrect.
+    const menuWidth = Math.max(rect.width, menuRef.current?.offsetWidth ?? 0);
+    placedWidth.current = menuWidth;
     // Keeps a menu wider than its trigger on screen. This is what upstream's
     // `right-0` bought before the menu became position:fixed.
     const left = Math.max(
@@ -70,6 +84,7 @@ export const Dropdown: React.FC<DropdownProps> = ({
 
     setMenuStyle({
       position: "fixed",
+      visibility: "visible",
       left,
       minWidth: rect.width,
       maxHeight: Math.min(MENU_MAX_HEIGHT, available),
@@ -80,13 +95,31 @@ export const Dropdown: React.FC<DropdownProps> = ({
   }, []);
 
   useLayoutEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      // Back to hidden, so the next open measures a fixed element again.
+      setMenuStyle(HIDDEN_MENU);
+      placedWidth.current = 0;
+      return;
+    }
     position();
+
+    // The menu's width settles after the style lands, and a caller's
+    // `menuClassName` can widen it further. Re-clamp when that happens, but
+    // only on a real change: re-positioning on its own echo would loop.
+    const menu = menuRef.current;
+    const observer =
+      menu && typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => {
+            if (menu.offsetWidth !== placedWidth.current) position();
+          })
+        : null;
+    if (menu && observer) observer.observe(menu);
 
     // `true` so ancestor scrolls are caught, not just the window's.
     window.addEventListener("scroll", position, true);
     window.addEventListener("resize", position);
     return () => {
+      observer?.disconnect();
       window.removeEventListener("scroll", position, true);
       window.removeEventListener("resize", position);
     };

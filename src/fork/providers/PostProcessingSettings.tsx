@@ -10,7 +10,7 @@ import { PostProcessingSettingsPrompts } from "@/components/settings/PostProcess
 import { ShortcutInput } from "@/components/settings/ShortcutInput";
 import { PolicySettings } from "./PolicySettings";
 import { RotationEditor } from "./RotationEditor";
-import { useBinding } from "./useProviders";
+import { useBinding, type BindingEdit } from "./useProviders";
 
 export const PostProcessingSettings: React.FC = () => {
   const { t } = useTranslation("fork");
@@ -26,8 +26,10 @@ export const PostProcessingSettings: React.FC = () => {
     return error ? <Alert variant="error">{error}</Alert> : null;
   }
 
-  const update = (patch: Partial<typeof binding>) =>
-    void save({ ...binding, ...patch });
+  const update = (edit: BindingEdit) =>
+    void save((current) =>
+      typeof edit === "function" ? edit(current) : { ...current, ...edit },
+    );
 
   // Matches the backend rule: an empty rotation means upstream's key runs.
   const rotationEmpty = (binding.entries ?? []).length === 0;

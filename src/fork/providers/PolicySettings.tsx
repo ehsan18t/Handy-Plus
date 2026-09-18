@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/Input";
 import { SettingContainer } from "@/components/ui/SettingContainer";
 import { SettingsGroup } from "@/components/ui/SettingsGroup";
 import { ToggleSwitch } from "@/components/ui/ToggleSwitch";
+import type { BindingEdit } from "./useProviders";
 
 const COOLDOWN_CHOICES = [1, 3, 6, 12, 24, 72, 168] as const;
 /** Mirrors the backend clamp in `set_cloud_binding`. */
@@ -13,7 +14,7 @@ const MAX_STRIKE_THRESHOLD = 20;
 
 interface PolicySettingsProps {
   binding: CapabilityBinding;
-  onChange: (patch: Partial<CapabilityBinding>) => void;
+  onChange: (edit: BindingEdit) => void;
   /** Speech only: falling back means running the local model. */
   showFallback?: boolean;
 }

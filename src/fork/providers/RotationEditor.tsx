@@ -21,12 +21,13 @@ import {
   providerSupports,
   useProviderInfo,
   useCredentialStatus,
+  type BindingEdit,
 } from "./useProviders";
 
 interface RotationEditorProps {
   capability: Capability;
   binding: CapabilityBinding;
-  onChange: (patch: Partial<CapabilityBinding>) => void;
+  onChange: (edit: BindingEdit) => void;
   /** Post-processing only: the instruction templates entries can name. */
   templates?: LLMPrompt[];
 }
@@ -69,24 +70,32 @@ export const RotationEditor: React.FC<RotationEditorProps> = ({
 
   const entries = binding.entries ?? [];
 
-  const setEntries = (next: RotationEntry[]) => onChange({ entries: next });
+  // Every mutation is a function of the rotation as it stands when the edit is
+  // applied, never of the array this render closed over. Two clicks inside one
+  // round-trip used to make the second undo the first.
+  const setEntries = (next: (current: RotationEntry[]) => RotationEntry[]) =>
+    onChange((current: CapabilityBinding) => ({
+      ...current,
+      entries: next(current.entries ?? []),
+    }));
 
-  const moveTo = (from: number, to: number) => {
-    if (to < 0 || to >= entries.length || from === to) return;
-    const next = [...entries];
-    const [moved] = next.splice(from, 1);
-    next.splice(to, 0, moved);
-    setEntries(next);
-  };
+  const moveTo = (from: number, to: number) =>
+    setEntries((current) => {
+      if (to < 0 || to >= current.length || from === to) return current;
+      const next = [...current];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
 
   const removeEntry = (index: number) =>
-    setEntries(entries.filter((_, i) => i !== index));
+    setEntries((current) => current.filter((_, i) => i !== index));
 
   const saveEntry = (entry: RotationEntry) => {
-    setEntries(
+    setEntries((current) =>
       editing === ADDING
-        ? [...entries, entry]
-        : entries.map((existing, i) => (i === editing ? entry : existing)),
+        ? [...current, entry]
+        : current.map((existing, i) => (i === editing ? entry : existing)),
     );
     setEditing(null);
   };
@@ -139,7 +148,7 @@ export const RotationEditor: React.FC<RotationEditorProps> = ({
           <div
             // Keyed by the entry, not the position: rows reorder in place, and
             // an index key hands mounted state to whichever entry lands there.
-            key={`${entryKey(entry.credential_id, entry.model ?? "")}#${index}`}
+            key={entryKey(entry.credential_id, entry.model ?? "")}
             draggable
             onDragStart={() => setDragging(index)}
             onDragEnd={() => setDragging(null)}

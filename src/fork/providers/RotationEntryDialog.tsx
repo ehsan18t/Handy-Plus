@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type {
   Capability,
@@ -44,11 +44,17 @@ export const RotationEntryDialog: React.FC<RotationEntryDialogProps> = ({
   const [model, setModel] = useState("");
   const [promptId, setPromptId] = useState<string | null>(null);
 
+  // Seed on open only. `entry` and `credentials` get new identities on every
+  // settings refresh, and a dictation finishing in the background writes
+  // settings, so reacting to them wiped whatever was half-typed.
+  const wasOpen = useRef(false);
   useEffect(() => {
-    if (!open) return;
-    setCredentialId(entry?.credential_id ?? credentials[0]?.id ?? "");
-    setModel(entry?.model ?? "");
-    setPromptId(entry?.prompt_id ?? null);
+    if (open && !wasOpen.current) {
+      setCredentialId(entry?.credential_id ?? credentials[0]?.id ?? "");
+      setModel(entry?.model ?? "");
+      setPromptId(entry?.prompt_id ?? null);
+    }
+    wasOpen.current = open;
   }, [open, entry, credentials]);
 
   const provider = providers.find(

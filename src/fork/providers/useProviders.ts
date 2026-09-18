@@ -1,5 +1,5 @@
 import type React from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   commands,
   type Capability,
@@ -9,22 +9,66 @@ import {
 } from "@/bindings";
 import { useSettings } from "@/hooks/useSettings";
 
-/** Read from the settings store; it already lives in `AppSettings`. */
+export type BindingEdit =
+  | Partial<CapabilityBinding>
+  | ((current: CapabilityBinding) => CapabilityBinding);
+
+/**
+ * Read from the settings store, write through an optimistic overlay.
+ *
+ * The overlay is not cosmetic. `settings` only catches up after the command
+ * round-trips and the store re-reads, and every edit used to be built from the
+ * value rendered before that landed. Two edits made inside that window both
+ * built on the pre-edit rotation, so the second silently reverted the first:
+ * delete a row and immediately delete another, and the first one comes back.
+ * Adding a credential and then touching anything else lost the credential the
+ * same way, which is indistinguishable from "rotation does not work".
+ *
+ * Every edit is therefore a function of the current value, applied to the
+ * newest queued value rather than the newest rendered one.
+ */
 export const useBinding = (capability: Capability) => {
   const { settings, refreshSettings } = useSettings();
   const [error, setError] = useState<string | null>(null);
+  const [optimistic, setOptimistic] = useState<CapabilityBinding | null>(null);
+  const queued = useRef<CapabilityBinding | null>(null);
+  const inFlight = useRef(0);
 
-  const binding = settings?.cloud_bindings?.[capability] ?? null;
+  const server = settings?.cloud_bindings?.[capability] ?? null;
+
+  // Adopt server state only when nothing of ours is in flight; otherwise an
+  // unrelated settings write (a dictation finishing marks a key's validity)
+  // would rewind an edit that has not been acknowledged yet.
+  useEffect(() => {
+    if (inFlight.current === 0) {
+      queued.current = null;
+      setOptimistic(null);
+    }
+  }, [server]);
+
+  const binding = optimistic ?? server;
 
   const save = useCallback(
-    async (next: CapabilityBinding) => {
-      const result = await commands.setCloudBinding(capability, next);
-      setError(result.status === "error" ? result.error : null);
+    async (edit: (current: CapabilityBinding) => CapabilityBinding) => {
+      const base = queued.current ?? server;
+      if (!base) return;
+
+      const next = edit(base);
+      queued.current = next;
+      setOptimistic(next);
+
+      inFlight.current += 1;
+      try {
+        const result = await commands.setCloudBinding(capability, next);
+        setError(result.status === "error" ? result.error : null);
+      } finally {
+        inFlight.current -= 1;
+      }
       // The backend clamps and prunes what it stores, so re-read rather than
       // trusting the copy we sent.
       await refreshSettings();
     },
-    [capability, refreshSettings],
+    [capability, refreshSettings, server],
   );
 
   return { binding, save, error };
@@ -83,15 +127,34 @@ export const useProviderInfo = (): Map<string, ProviderInfo> => {
 
   useEffect(() => {
     if (providerInfoCache) return;
-    providerInfoInFlight ??= commands.getCloudProviders().then((list) => {
-      providerInfoCache = new Map(list.map((entry) => [entry.id, entry]));
-      return providerInfoCache;
-    });
+    providerInfoInFlight ??= commands
+      .getCloudProviders()
+      .then((list) => {
+        // An empty list means the backend could not answer, not that Handy has
+        // no providers: it always ships several. Caching it would be the same
+        // poisoning as caching a rejection.
+        if (list.length === 0) throw new Error("no providers returned");
+        providerInfoCache = new Map(list.map((entry) => [entry.id, entry]));
+        return providerInfoCache;
+      })
+      .catch((cause) => {
+        // Clearing the slot is what makes this retryable. Leaving a settled
+        // rejected promise in it meant `??=` never fetched again, every
+        // provider reported no capabilities for the rest of the session, and
+        // the rotation editor offered no eligible keys and hid its Add button.
+        // Only restarting the app recovered.
+        providerInfoInFlight = null;
+        throw cause;
+      });
 
     let alive = true;
-    providerInfoInFlight.then((loaded) => {
-      if (alive) setInfo(loaded);
-    });
+    void providerInfoInFlight
+      .then((loaded) => {
+        if (alive) setInfo(loaded);
+      })
+      .catch(() => {
+        // Rendered as "no capabilities" until the next mount retries.
+      });
     return () => {
       alive = false;
     };

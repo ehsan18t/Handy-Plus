@@ -10,7 +10,7 @@ import { ToggleSwitch } from "@/components/ui/ToggleSwitch";
 import { Alert } from "@/components/ui/Alert";
 import { PolicySettings } from "./PolicySettings";
 import { RotationEditor } from "./RotationEditor";
-import { useBinding, useDraftField } from "./useProviders";
+import { useBinding, useDraftField, type BindingEdit } from "./useProviders";
 
 export const CloudSpeechSettings: React.FC = () => {
   const { t } = useTranslation("fork");
@@ -18,8 +18,10 @@ export const CloudSpeechSettings: React.FC = () => {
   const { binding, save, error } = useBinding("stt");
   const translating = settings?.translate_to_english ?? false;
 
-  const update = (patch: Partial<CapabilityBinding>) =>
-    void save({ ...(binding ?? {}), ...patch } as CapabilityBinding);
+  const update = (edit: BindingEdit) =>
+    void save((current) =>
+      typeof edit === "function" ? edit(current) : { ...current, ...edit },
+    );
 
   // Hooks run unconditionally, so these are declared before the early return.
   const language = useDraftField(binding?.language ?? "", (value) =>
