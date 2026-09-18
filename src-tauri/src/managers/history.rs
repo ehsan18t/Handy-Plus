@@ -327,6 +327,59 @@ impl HistoryManager {
         Ok(entry)
     }
 
+    /// Write a fresh post-processing result onto an entry, leaving its
+    /// transcript alone.
+    ///
+    /// Deliberately not [`Self::update_transcription`]. Regenerating cleanup
+    /// re-reads nothing from the audio, so writing the transcript back would only
+    /// open a window in which a concurrent re-transcription is silently reverted.
+    ///
+    /// It also raises `post_process_requested`, which is not bookkeeping: an
+    /// entry dictated without cleanup keeps the flag at 0, and a later
+    /// re-transcribe feeds that 0 back into `process_transcription_output`, which
+    /// then returns `None` and erases whatever was regenerated here. Those are
+    /// exactly the entries this path exists to serve.
+    pub fn update_post_process(
+        &self,
+        id: i64,
+        post_processed_text: String,
+        post_process_prompt: Option<String>,
+    ) -> Result<HistoryEntry> {
+        let conn = self.get_connection()?;
+        let updated = conn.execute(
+            "UPDATE transcription_history
+             SET post_processed_text = ?1,
+                 post_process_prompt = ?2,
+                 post_process_requested = 1
+             WHERE id = ?3",
+            params![post_processed_text, post_process_prompt, id],
+        )?;
+
+        if updated == 0 {
+            return Err(anyhow!("History entry {} not found", id));
+        }
+
+        let entry = conn
+            .query_row(
+                "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_requested
+                 FROM transcription_history WHERE id = ?1",
+                params![id],
+                Self::map_history_entry,
+            )?;
+
+        debug!("Regenerated post-processing for history entry {}", id);
+
+        if let Err(e) = (HistoryUpdatePayload::Updated {
+            entry: entry.clone(),
+        })
+        .emit(&self.app_handle)
+        {
+            error!("Failed to emit history-updated event: {}", e);
+        }
+
+        Ok(entry)
+    }
+
     pub fn cleanup_old_entries(&self) -> Result<()> {
         let retention_period = crate::settings::get_recording_retention_period(&self.app_handle);
 

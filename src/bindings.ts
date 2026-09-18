@@ -977,6 +977,24 @@ async retryHistoryEntryTranscription(id: number) : Promise<Result<null, string>>
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Re-run post-processing over an entry's stored transcript.
+ * 
+ * The audio is never touched. The raw text is already in the row, so this costs
+ * one cleanup request rather than a transcription plus a cleanup, and the stored
+ * transcript is written back unchanged so the two views stay in step.
+ * 
+ * Cleanup is forced on regardless of what the original dictation requested,
+ * because pressing the button is the request.
+ */
+async regenerateHistoryEntryPostProcess(id: number) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("regenerate_history_entry_post_process", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async updateHistoryLimit(limit: number) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("update_history_limit", { limit }) };

@@ -1,7 +1,15 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { readFile } from "@tauri-apps/plugin-fs";
-import { Check, Copy, FolderOpen, RotateCcw, Star, Trash2 } from "lucide-react";
+import {
+  Check,
+  Copy,
+  FolderOpen,
+  RotateCcw,
+  Sparkles,
+  Star,
+  Trash2,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
@@ -11,9 +19,18 @@ import {
   type HistoryUpdatePayload,
 } from "@/bindings";
 import { useOsType } from "@/hooks/useOsType";
+import { useSettings } from "@/hooks/useSettings";
 import { formatDateTime } from "@/utils/dateFormat";
 import { AudioPlayer, AudioPlayerGroup } from "../../ui/AudioPlayer";
 import { Button } from "../../ui/Button";
+import { Tabs } from "../../ui/Tabs";
+
+/**
+ * Which text an entry shows. `raw` is the transcript the model produced,
+ * `processed` is what post-processing made of it, which the database has always
+ * stored and this page never displayed.
+ */
+type HistoryTab = "raw" | "processed";
 
 const IconButton: React.FC<{
   onClick: () => void;
@@ -62,12 +79,20 @@ const OpenRecordingsButton: React.FC<OpenRecordingsButtonProps> = ({
 export const HistorySettings: React.FC = () => {
   const { t } = useTranslation();
   const osType = useOsType();
+  const { settings } = useSettings();
+  const [tab, setTab] = useState<HistoryTab>("raw");
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [hasMore, setHasMore] = useState(true);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const entriesRef = useRef<HistoryEntry[]>([]);
   const loadingRef = useRef(false);
+
+  // Derived rather than reset through an effect: turning post-processing off
+  // while the second tab is selected would otherwise leave the page on a tab it
+  // no longer renders, and this way the selection survives being turned back on.
+  const postProcessEnabled = settings?.post_process_enabled ?? false;
+  const activeTab: HistoryTab = postProcessEnabled ? tab : "raw";
 
   // Keep ref in sync for use in IntersectionObserver callback
   useEffect(() => {
@@ -223,6 +248,13 @@ export const HistorySettings: React.FC = () => {
     }
   };
 
+  const regenerateHistoryEntry = async (id: number) => {
+    const result = await commands.regenerateHistoryEntryPostProcess(id);
+    if (result.status !== "ok") {
+      throw new Error(String(result.error));
+    }
+  };
+
   const openRecordingsFolder = async () => {
     try {
       const result = await commands.openRecordingsFolder();
@@ -257,11 +289,19 @@ export const HistorySettings: React.FC = () => {
               <HistoryEntryComponent
                 key={entry.id}
                 entry={entry}
+                tab={activeTab}
                 onToggleSaved={() => toggleSaved(entry.id)}
-                onCopyText={() => copyToClipboard(entry.transcription_text)}
+                onCopyText={() =>
+                  copyToClipboard(
+                    activeTab === "processed"
+                      ? (entry.post_processed_text ?? "")
+                      : entry.transcription_text,
+                  )
+                }
                 getAudioUrl={getAudioUrl}
                 deleteAudio={deleteAudioEntry}
                 retryTranscription={retryHistoryEntry}
+                regeneratePostProcess={regenerateHistoryEntry}
               />
             ))}
           </div>
@@ -286,6 +326,19 @@ export const HistorySettings: React.FC = () => {
             label={t("settings.history.openFolder")}
           />
         </div>
+        {postProcessEnabled && (
+          <div className="px-4">
+            <Tabs
+              tabs={[
+                { id: "raw", label: t("fork:history.tabRaw") },
+                { id: "processed", label: t("fork:history.tabProcessed") },
+              ]}
+              active={activeTab}
+              onChange={setTab}
+              ariaLabel={t("fork:history.tabsLabel")}
+            />
+          </div>
+        )}
         <div className="bg-background border border-mid-gray/20 rounded-lg overflow-visible">
           {content}
         </div>
@@ -296,26 +349,49 @@ export const HistorySettings: React.FC = () => {
 
 interface HistoryEntryProps {
   entry: HistoryEntry;
+  tab: HistoryTab;
   onToggleSaved: () => void;
   onCopyText: () => void;
   getAudioUrl: (fileName: string) => Promise<string | null>;
   deleteAudio: (id: number) => Promise<void>;
   retryTranscription: (id: number) => Promise<void>;
+  regeneratePostProcess: (id: number) => Promise<void>;
 }
 
 const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
   entry,
+  tab,
   onToggleSaved,
   onCopyText,
   getAudioUrl,
   deleteAudio,
   retryTranscription,
+  regeneratePostProcess,
 }) => {
   const { t, i18n } = useTranslation();
   const [showCopied, setShowCopied] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
 
-  const hasTranscription = entry.transcription_text.trim().length > 0;
+  const rawText = entry.transcription_text;
+  const displayText =
+    tab === "processed" ? (entry.post_processed_text ?? "") : rawText;
+  const hasTranscription = displayText.trim().length > 0;
+  // Both operations rewrite this entry, so either one disables every control on
+  // the row.
+  const busy = retrying || regenerating;
+  // Narrower on purpose. Rows are not remounted when the tab changes, so a
+  // regenerate started on the Post Process tab is still in flight after a switch
+  // to Raw, and `busy` there would pulse "Post-processing..." over a transcript
+  // that nothing is rewriting.
+  const textBusy = retrying || (regenerating && tab === "processed");
+  const busyLabel = retrying
+    ? t("settings.history.transcribing")
+    : t("fork:history.regenerating");
+  const emptyLabel =
+    tab === "processed"
+      ? t("fork:history.notPostProcessed")
+      : t("settings.history.transcriptionFailed");
 
   const handleLoadAudio = useCallback(
     () => getAudioUrl(entry.file_name),
@@ -341,6 +417,18 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
     }
   };
 
+  const handleRegenerate = async () => {
+    try {
+      setRegenerating(true);
+      await regeneratePostProcess(entry.id);
+    } catch (error) {
+      console.error("Failed to regenerate post-processing:", error);
+      toast.error(t("fork:history.regenerateError"));
+    } finally {
+      setRegenerating(false);
+    }
+  };
+
   const handleRetranscribe = async () => {
     try {
       setRetrying(true);
@@ -362,7 +450,7 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
         <div className="flex items-center">
           <IconButton
             onClick={handleCopyText}
-            disabled={!hasTranscription || retrying}
+            disabled={!hasTranscription || busy}
             title={t("settings.history.copyToClipboard")}
           >
             {showCopied ? (
@@ -373,7 +461,7 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
           </IconButton>
           <IconButton
             onClick={onToggleSaved}
-            disabled={retrying}
+            disabled={busy}
             active={entry.saved}
             title={
               entry.saved
@@ -389,7 +477,7 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
           </IconButton>
           <IconButton
             onClick={handleRetranscribe}
-            disabled={retrying}
+            disabled={busy}
             title={t("settings.history.retranscribe")}
           >
             <RotateCcw
@@ -402,9 +490,26 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
               }
             />
           </IconButton>
+          {tab === "processed" && (
+            <IconButton
+              onClick={handleRegenerate}
+              disabled={busy || rawText.trim().length === 0}
+              title={t("fork:history.regenerate")}
+            >
+              <Sparkles
+                width={16}
+                height={16}
+                style={
+                  regenerating
+                    ? { animation: "spin 1s linear infinite" }
+                    : undefined
+                }
+              />
+            </IconButton>
+          )}
           <IconButton
             onClick={handleDeleteEntry}
-            disabled={retrying}
+            disabled={busy}
             title={t("settings.history.delete")}
           >
             <Trash2 width={16} height={16} />
@@ -414,19 +519,19 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
 
       <p
         className={`italic text-sm pb-2 ${
-          retrying
+          textBusy
             ? ""
             : hasTranscription
               ? "text-text/90 select-text cursor-text whitespace-pre-wrap break-words"
               : "text-text/40"
         }`}
         style={
-          retrying
+          textBusy
             ? { animation: "transcribe-pulse 3s ease-in-out infinite" }
             : undefined
         }
       >
-        {retrying && (
+        {textBusy && (
           <style>{`
             @keyframes transcribe-pulse {
               0%, 100% { color: color-mix(in srgb, var(--color-text) 40%, transparent); }
@@ -434,11 +539,7 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
             }
           `}</style>
         )}
-        {retrying
-          ? t("settings.history.transcribing")
-          : hasTranscription
-            ? entry.transcription_text
-            : t("settings.history.transcriptionFailed")}
+        {textBusy ? busyLabel : hasTranscription ? displayText : emptyLabel}
       </p>
 
       <AudioPlayer onLoadRequest={handleLoadAudio} className="w-full" />

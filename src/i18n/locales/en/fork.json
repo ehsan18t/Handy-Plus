@@ -137,5 +137,14 @@
       "timed_out": "The provider took too long to answer.",
       "unexpected": "See handy.log for details."
     }
+  },
+  "history": {
+    "tabRaw": "Raw",
+    "tabProcessed": "Post Processed",
+    "notPostProcessed": "Not post-processed yet",
+    "regenerate": "Regenerate post-processing",
+    "regenerating": "Post-processing...",
+    "regenerateError": "Could not regenerate post-processing",
+    "tabsLabel": "History view"
   }
 }

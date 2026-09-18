@@ -106,6 +106,57 @@ pub async fn retry_history_entry_transcription(
         .map_err(|e| e.to_string())
 }
 
+/// Re-run post-processing over an entry's stored transcript.
+///
+/// The audio is never touched. The raw text is already in the row, so this costs
+/// one cleanup request rather than a transcription plus a cleanup, and the stored
+/// transcript is written back unchanged so the two views stay in step.
+///
+/// Cleanup is forced on regardless of what the original dictation requested,
+/// because pressing the button is the request.
+#[tauri::command]
+#[specta::specta]
+pub async fn regenerate_history_entry_post_process(
+    app: AppHandle,
+    history_manager: State<'_, Arc<HistoryManager>>,
+    id: i64,
+) -> Result<(), String> {
+    // The button is hidden while the feature is off, but the command is
+    // registered globally and upstream's single-key path has no enabled check of
+    // its own, so without this an invocation would quietly clean anyway.
+    if !crate::settings::get_settings(&app).post_process_enabled {
+        return Err("Post-processing is disabled".to_string());
+    }
+
+    let entry = history_manager
+        .get_entry_by_id(id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("History entry {} not found", id))?;
+
+    if entry.transcription_text.trim().is_empty() {
+        return Err("Entry has no transcript to post-process".to_string());
+    }
+
+    let processed = process_transcription_output(&app, &entry.transcription_text, true).await;
+
+    // Blank, not merely absent. A failed request arrives as `None`, but a 200
+    // carrying an empty body, or one holding nothing but a think block, reaches
+    // here as `Some("")`: the single-key path has no empty check (see
+    // `post_process_transcription` in actions.rs, which only guards the Apple
+    // Intelligence branch). Writing either would erase the text the entry already
+    // held, turning a transient provider fault into data loss.
+    let regenerated = processed
+        .post_processed_text
+        .filter(|text| !text.trim().is_empty())
+        .ok_or_else(|| "Post-processing produced no text".to_string())?;
+
+    history_manager
+        .update_post_process(id, regenerated, processed.post_process_prompt)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn update_history_limit(
