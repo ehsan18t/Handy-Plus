@@ -109,10 +109,38 @@ pub async fn transcribe(
     samples: Vec<f32>,
     cancel_generation: u64,
 ) -> anyhow::Result<String> {
+    let rm = Arc::clone(&app.state::<Arc<AudioRecordingManager>>());
+    transcribe_with(app, samples, move || {
+        rm.was_cancelled_since(cancel_generation)
+    })
+    .await
+}
+
+/// Re-transcribe a recording already on disk, for the history page's retry
+/// button.
+///
+/// It takes the same route as the dictation that produced the entry. Running
+/// the local model here while the rotation serves every live dictation would
+/// make the button hand back a transcript the user cannot get any other way,
+/// and silently spend a multi-gigabyte model load doing it.
+///
+/// Nothing can cancel it: there is no recording in flight, and the command
+/// returns straight to the frontend.
+pub async fn transcribe_stored_recording(
+    app: &AppHandle,
+    samples: Vec<f32>,
+) -> anyhow::Result<String> {
+    transcribe_with(app, samples, || false).await
+}
+
+async fn transcribe_with(
+    app: &AppHandle,
+    samples: Vec<f32>,
+    is_cancelled: impl Fn() -> bool,
+) -> anyhow::Result<String> {
     use cloud::stt::CloudTranscription;
 
-    let tm = app.state::<Arc<TranscriptionManager>>();
-    let rm = app.state::<Arc<AudioRecordingManager>>();
+    let tm = Arc::clone(&app.state::<Arc<TranscriptionManager>>());
     let settings = crate::settings::get_settings(app);
 
     // Wrapped like post-processing: a provider that accepts the connection and
@@ -120,7 +148,7 @@ pub async fn transcribe(
     // budget with no way to abandon it.
     let attempt = crate::actions::complete_unless_cancelled(
         cloud::stt::transcribe(app, &settings, &samples),
-        || rm.was_cancelled_since(cancel_generation),
+        is_cancelled,
     )
     .await;
 
@@ -137,8 +165,15 @@ pub async fn transcribe(
             // `cloud::stt::transcribe` errors rather than loading, and
             // `local_model_load_started` skipped the load when cloud speech was
             // going to serve this one.
-            tm.initiate_model_load();
-            tm.transcribe(samples)
+            //
+            // Off the runtime: local inference holds its thread for seconds,
+            // and every caller here is an async task sharing that pool.
+            tauri::async_runtime::spawn_blocking(move || {
+                tm.initiate_model_load();
+                tm.transcribe(samples)
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("Transcription task panicked: {e}"))?
         }
         // Cancelled mid-upload. The caller's own cancellation check tears down.
         None => Ok(String::new()),

@@ -1,8 +1,5 @@
 use crate::actions::process_transcription_output;
-use crate::managers::{
-    history::{HistoryManager, PaginatedHistory},
-    transcription::TranscriptionManager,
-};
+use crate::managers::history::{HistoryManager, PaginatedHistory};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
 
@@ -64,7 +61,6 @@ pub async fn delete_history_entry(
 pub async fn retry_history_entry_transcription(
     app: AppHandle,
     history_manager: State<'_, Arc<HistoryManager>>,
-    transcription_manager: State<'_, Arc<TranscriptionManager>>,
     id: i64,
 ) -> Result<(), String> {
     let entry = history_manager
@@ -81,12 +77,11 @@ pub async fn retry_history_entry_transcription(
         return Err("Recording has no audio samples".to_string());
     }
 
-    transcription_manager.initiate_model_load();
-
-    let tm = Arc::clone(&transcription_manager);
-    let transcription = tauri::async_runtime::spawn_blocking(move || tm.transcribe(samples))
+    // Fork: see `fork::hooks::transcribe_stored_recording`. The local model is
+    // loaded by the fallback inside the hook, so an entry the rotation serves
+    // never pays for a load.
+    let transcription = crate::fork::hooks::transcribe_stored_recording(&app, samples)
         .await
-        .map_err(|e| format!("Transcription task panicked: {}", e))?
         .map_err(|e| e.to_string())?;
 
     if transcription.is_empty() {
