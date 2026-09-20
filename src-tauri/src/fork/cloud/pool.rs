@@ -430,7 +430,19 @@ impl CredentialPool {
                         validity_updates
                             .push((credential_id.to_string(), CredentialValidity::Invalid));
                     }
+                    let refused_the_request = error.is_request_fault();
                     last_error = Some(error);
+                    if refused_the_request {
+                        // Every remaining key would be handed the same oversized
+                        // request and refuse it the same way, and when the
+                        // refusal is a truncated answer each of those is a
+                        // completion the user is billed for and cannot use. Stop
+                        // here so the reported reason is this one, undiluted.
+                        warn!(
+                            "The request itself was refused for {capability}; not offering it to the remaining credential(s)"
+                        );
+                        break;
+                    }
                 }
             }
         }
@@ -480,6 +492,15 @@ impl CredentialPool {
                 warn!(
                     "Credential '{}' was rejected as invalid ({})",
                     candidate.credential_label, error
+                );
+            }
+            FailureClass::RequestRejected => {
+                // No strike and no cooldown: the next key gets a turn in case it
+                // is on a higher tier, but nothing here is evidence about this
+                // one.
+                warn!(
+                    "Credential '{}' could not serve this request for {capability}, and the request is what was refused: {error}",
+                    candidate.credential_label
                 );
             }
             FailureClass::Failure => {
@@ -581,6 +602,49 @@ mod tests {
                 )
                 .await;
             assert!(run.result.is_err());
+        }
+
+        for index in 0..2 {
+            let pair = state.pair_state(&format!("cred_{index}"), CAP, MODEL, WINDOW);
+            assert_eq!(pair.recent_strikes, 0, "cred_{index} was struck");
+            assert!(!pair.is_cooling_down(now_ms()), "cred_{index} was benched");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_request_the_provider_refuses_on_size_costs_no_strike() {
+        // This is what benched both keys for six hours: a cleanup whose
+        // reserved output alone exceeded the tier's per-minute ceiling, so it
+        // failed identically on every key and on every retry. Three of them was
+        // the threshold, and the user lost post-processing for the afternoon.
+        let settings = settings_with(2);
+        let plan = plan(&settings, CAP).unwrap();
+        let (pool, state) = pool();
+
+        for _ in 0..5 {
+            let run = pool
+                .execute(
+                    CAP,
+                    &plan,
+                    None,
+                    fails_with(ApiError::from_status(
+                        429,
+                        None,
+                        "Request too large for model `qwen`: Limit 1000, Requested 1155",
+                    )),
+                )
+                .await;
+            assert!(
+                run.validity_updates.is_empty(),
+                "a working key must not be marked invalid"
+            );
+            match run.result {
+                // Offering the same oversized request to the second key would
+                // only be refused again, and when the refusal is a truncated
+                // answer it is a completion the user pays for.
+                Err(PoolError::Exhausted { attempted, .. }) => assert_eq!(attempted, 1),
+                other => panic!("expected an exhausted rotation, got {other:?}"),
+            }
         }
 
         for index in 0..2 {

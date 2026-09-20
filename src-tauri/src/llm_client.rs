@@ -1,6 +1,6 @@
 use crate::fork::hooks::{parse_retry_after, ApiError};
 use crate::settings::PostProcessProvider;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, REFERER, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -85,11 +85,98 @@ fn reasoning_disable_params(provider: &PostProcessProvider) -> ReasoningParams {
     }
 }
 
-/// Endpoints (base_url|model) that rejected the reasoning-disable fields with a
-/// 4xx. Remembered for the lifetime of the process so every dictation after the
-/// first skips the doomed attempt and goes straight to a plain request.
-fn reasoning_rejections() -> &'static Mutex<HashSet<String>> {
-    static REJECTED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+/// Floor on the answer, so a one-word dictation still has room to come back
+/// cleaned up rather than cut off.
+const MIN_OUTPUT_TOKENS: u32 = 256;
+/// Ceiling, so a very long dictation does not reserve an absurd budget. Past
+/// this the answer is truncated and refused rather than used, which is the
+/// honest outcome: the transcript survives untouched.
+const MAX_OUTPUT_TOKENS: u32 = 4096;
+
+/// How much room to reserve for the answer.
+///
+/// Without this the request carries no ceiling, and a provider metering output
+/// tokens per minute then reserves whatever the model could theoretically emit.
+/// Groq's free tier allows 1000 a minute and estimated 1005 to 2048 for
+/// transcripts of 17 to 1330 characters, so every single cleanup was rejected
+/// before a token was generated, on an account that was doing nothing else.
+///
+/// Cleanup rewrites its input, so the input's own length is the estimate, with
+/// half again for a model that expands rather than trims. Four characters per
+/// token is the usual rule of thumb for English and is deliberately rough: this
+/// picks a reservation, and `finish_reason` catches it if the guess was low.
+///
+/// **This cannot rescue a dictation whose cleanup genuinely needs more output
+/// than the account allows in a minute**, which on Groq's free tier is about
+/// 2,300 characters, some four minutes of speech. Nothing here knows that
+/// ceiling: it appears only in the rejection. Past it the call is refused, the
+/// transcript is kept exactly as dictated, and the user is told the request was
+/// too large, which is the honest outcome. Clamping to a guessed ceiling instead
+/// would return cleanups chopped off mid-sentence.
+fn output_token_cap(system_prompt: Option<&str>, user_content: &str) -> u32 {
+    let chars = system_prompt.map_or(0, str::len) + user_content.len();
+    let estimated_input_tokens = (chars / 4) as u32;
+    estimated_input_tokens
+        .saturating_mul(3)
+        .saturating_div(2)
+        .saturating_add(128)
+        .clamp(MIN_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS)
+}
+
+/// Whether the answer stopped because it hit a ceiling rather than because it
+/// finished.
+///
+/// OpenAI and Groq say `length`; Anthropic-shaped compatibility layers say
+/// `max_tokens`, Gemini's says `MAX_TOKENS`, and some gateways use
+/// `model_length`. Matching only the first of those was the difference between
+/// refusing a truncated cleanup and pasting it over the transcript.
+fn stopped_at_the_limit(finish_reason: Option<&str>) -> bool {
+    finish_reason.is_some_and(|reason| {
+        matches!(
+            reason.to_ascii_lowercase().as_str(),
+            "length" | "max_tokens" | "max_output_tokens" | "model_length" | "token_limit"
+        )
+    })
+}
+
+/// Pick the field this endpoint understands for the output ceiling.
+///
+/// `max_tokens` is the one every OpenAI-compatible server has accepted for
+/// years, including local ones, but OpenAI itself now rejects it for reasoning
+/// models and wants `max_completion_tokens`. Groq takes both and documents the
+/// newer one. Everything else, a local llama.cpp or Ollama included, only
+/// reliably knows `max_tokens`, so it stays the default.
+fn token_limit_params(provider: &PostProcessProvider, cap: u32) -> TokenLimitParams {
+    match provider.id.as_str() {
+        "openai" | "groq" => TokenLimitParams {
+            max_completion_tokens: Some(cap),
+            ..Default::default()
+        },
+        _ => TokenLimitParams {
+            max_tokens: Some(cap),
+            ..Default::default()
+        },
+    }
+}
+
+/// An optional request field an endpoint turned out not to accept.
+///
+/// Tracked separately, because conflating them is a live bug and not a
+/// theoretical one: Groq takes `reasoning_effort` on its reasoning models and
+/// answers 400 for it on the others, so a single flag would let one 400 on
+/// `llama-3.3-70b` also drop the output ceiling, and dropping the ceiling is
+/// exactly what made Groq reject every cleanup in the first place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum OptionalField {
+    Reasoning,
+    TokenLimit,
+}
+
+/// Endpoints (base_url|model) that rejected one of the optional fields. Kept for
+/// the lifetime of the process so every request after the first skips the doomed
+/// attempt instead of paying a retry each time.
+fn field_rejections() -> &'static Mutex<HashSet<(String, OptionalField)>> {
+    static REJECTED: OnceLock<Mutex<HashSet<(String, OptionalField)>>> = OnceLock::new();
     REJECTED.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
@@ -97,16 +184,55 @@ fn endpoint_key(provider: &PostProcessProvider, model: &str) -> String {
     format!("{}|{}", provider.base_url.trim_end_matches('/'), model)
 }
 
-fn is_known_rejected(key: &str) -> bool {
-    reasoning_rejections()
+fn is_known_rejected(key: &str, field: OptionalField) -> bool {
+    field_rejections()
         .lock()
-        .map(|set| set.contains(key))
+        .map(|set| set.contains(&(key.to_string(), field)))
         .unwrap_or(false)
 }
 
-fn remember_rejection(key: String) {
-    if let Ok(mut set) = reasoning_rejections().lock() {
-        set.insert(key);
+fn remember_rejection(key: &str, field: OptionalField) {
+    if let Ok(mut set) = field_rejections().lock() {
+        set.insert((key.to_string(), field));
+    }
+}
+
+/// Which field a 400/422 body is complaining about.
+///
+/// Providers name the offending parameter ("Unrecognized request argument
+/// supplied: reasoning_effort", "max_tokens is not supported with this model").
+/// When the body names neither, both are dropped, because one more probe costs
+/// another round trip on the dictation path.
+fn fields_blamed_by(body: &str) -> Vec<OptionalField> {
+    let body = body.to_ascii_lowercase();
+    let reasoning = ["reasoning_effort", "\"reasoning\"", "thinking"]
+        .iter()
+        .any(|name| body.contains(name));
+    let token_limit = ["max_completion_tokens", "max_tokens"]
+        .iter()
+        .any(|name| body.contains(name));
+
+    match (reasoning, token_limit) {
+        (true, false) => vec![OptionalField::Reasoning],
+        (false, true) => vec![OptionalField::TokenLimit],
+        _ => vec![OptionalField::Reasoning, OptionalField::TokenLimit],
+    }
+}
+
+/// The ceiling on the answer. Providers disagree on the field name, and sending
+/// both is itself an error on OpenAI, so at most one of these is set per request
+/// (see `token_limit_params`).
+#[derive(Debug, Serialize, Clone, Default, PartialEq)]
+struct TokenLimitParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
+}
+
+impl TokenLimitParams {
+    fn is_empty(&self) -> bool {
+        self.max_completion_tokens.is_none() && self.max_tokens.is_none()
     }
 }
 
@@ -119,6 +245,8 @@ struct ChatCompletionRequest {
     response_format: Option<ResponseFormat>,
     #[serde(flatten)]
     reasoning: ReasoningParams,
+    #[serde(flatten)]
+    token_limit: TokenLimitParams,
 }
 
 #[derive(Debug, Deserialize)]
@@ -129,6 +257,9 @@ struct ChatCompletionResponse {
 #[derive(Debug, Deserialize)]
 struct ChatChoice {
     message: ChatMessageResponse,
+    /// `"length"` means the answer stopped at the cap rather than finishing.
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -405,6 +536,9 @@ pub async fn send_chat_completion_with_schema(
 
     let client = create_client(provider, &api_key)?;
 
+    // Sized before the strings move into the message list below.
+    let cap = output_token_cap(system_prompt.as_deref(), &user_content);
+
     // Build messages vector
     let mut messages = Vec::new();
 
@@ -433,10 +567,15 @@ pub async fn send_chat_completion_with_schema(
     });
 
     let key = endpoint_key(provider, model);
-    let reasoning = if disable_reasoning && !is_known_rejected(&key) {
+    let reasoning = if disable_reasoning && !is_known_rejected(&key, OptionalField::Reasoning) {
         reasoning_disable_params(provider)
     } else {
         ReasoningParams::default()
+    };
+    let token_limit = if is_known_rejected(&key, OptionalField::TokenLimit) {
+        TokenLimitParams::default()
+    } else {
+        token_limit_params(provider, cap)
     };
 
     let mut request_body = ChatCompletionRequest {
@@ -445,6 +584,7 @@ pub async fn send_chat_completion_with_schema(
         stream: false,
         response_format,
         reasoning,
+        token_limit,
     };
 
     let mut response = client
@@ -461,25 +601,36 @@ pub async fn send_chat_completion_with_schema(
         sanitized_url(response.url())
     );
 
-    // A 400/422 on a request carrying reasoning-disable fields is almost always
-    // the endpoint rejecting those fields — retry once without them.
+    // A 400/422 on a request carrying optional shaping fields is almost always
+    // the endpoint rejecting one of them — retry once without any of them.
+    //
+    // Both are stripped together rather than bisected. Which field offended is
+    // not recoverable from the body in general, a second probe costs another
+    // round trip on the dictation path, and the two providers that meter output
+    // per minute, where losing the cap would matter, both accept both fields.
     if !status.is_success()
         && matches!(status.as_u16(), 400 | 422)
-        && !request_body.reasoning.is_empty()
+        && !(request_body.reasoning.is_empty() && request_body.token_limit.is_empty())
     {
         let error_text = response
             .text()
             .await
             .map(|body| redact_and_truncate(&body, &api_key))
             .unwrap_or_else(|e| {
-                report_reqwest_error("Failed to read reasoning rejection response", &e).message
+                report_reqwest_error("Failed to read field rejection response", &e).message
             });
+        let blamed = fields_blamed_by(&error_text);
         info!(
-            "Endpoint rejected request with reasoning disabled (status {}): {}. Retrying without reasoning fields",
-            status, error_text
+            "Endpoint rejected an optional request field (status {}): {}. Retrying without {:?}",
+            status, error_text, blamed
         );
 
-        request_body.reasoning = ReasoningParams::default();
+        if blamed.contains(&OptionalField::Reasoning) {
+            request_body.reasoning = ReasoningParams::default();
+        }
+        if blamed.contains(&OptionalField::TokenLimit) {
+            request_body.token_limit = TokenLimitParams::default();
+        }
         response = client
             .post(&url)
             .json(&request_body)
@@ -496,10 +647,14 @@ pub async fn send_chat_completion_with_schema(
 
         if status.is_success() {
             info!(
-                "Retry without reasoning fields succeeded; '{}' (model '{}') will skip them from now on",
-                sanitized_url_for_log(base_url), model
+                "Retry without {:?} succeeded; '{}' (model '{}') will skip them from now on",
+                blamed,
+                sanitized_url_for_log(base_url),
+                model
             );
-            remember_rejection(key);
+            for field in blamed {
+                remember_rejection(&key, field);
+            }
         }
     }
 
@@ -529,10 +684,58 @@ pub async fn send_chat_completion_with_schema(
         .await
         .map_err(|e| report_reqwest_error("Failed to parse API response", &e))?;
 
-    Ok(completion
-        .choices
-        .first()
-        .and_then(|choice| choice.message.content.clone()))
+    let Some(choice) = completion.choices.first() else {
+        return Ok(None);
+    };
+    let content = choice.message.content.clone();
+
+    if !stopped_at_the_limit(choice.finish_reason.as_deref()) {
+        return Ok(content);
+    }
+
+    // Nothing visible came back, so the ceiling was spent before the answer
+    // started. That is a reasoning model thinking inside the same budget, not a
+    // transcript too long to clean, and the old uncapped request served it fine.
+    // Retry once without the ceiling and stop sending one here.
+    if content.as_deref().is_none_or(|text| text.trim().is_empty()) {
+        if request_body.token_limit.is_empty() {
+            return Ok(content);
+        }
+        warn!(
+            "'{}' (model '{}') spent the whole {cap} token ceiling before answering; retrying without one",
+            sanitized_url_for_log(base_url),
+            model
+        );
+        remember_rejection(&key, OptionalField::TokenLimit);
+        request_body.token_limit = TokenLimitParams::default();
+
+        let retry = client
+            .post(&url)
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| report_reqwest_error("HTTP retry without a ceiling failed", &e))?;
+        if !retry.status().is_success() {
+            return Err(ApiError::from_response("API request failed", retry, &api_key).await);
+        }
+        let completion: ChatCompletionResponse = retry
+            .json()
+            .await
+            .map_err(|e| report_reqwest_error("Failed to parse API response", &e))?;
+        return Ok(completion
+            .choices
+            .first()
+            .and_then(|choice| choice.message.content.clone()));
+    }
+
+    // Visible text that stops mid-sentence is worse than no cleanup at all: the
+    // caller writes it over the transcript and the tail of the dictation is
+    // gone. The request is what was wrong, so this must not strike the key.
+    let error = ApiError::request_rejected(format!(
+        "answer stopped at the {cap} token output ceiling instead of finishing"
+    ));
+    warn!("{error}");
+    Err(error)
 }
 
 /// Fetch available models from an OpenAI-compatible API
@@ -646,6 +849,10 @@ mod tests {
     }
 
     fn request_json(reasoning: ReasoningParams) -> Value {
+        request_json_with(reasoning, TokenLimitParams::default())
+    }
+
+    fn request_json_with(reasoning: ReasoningParams, token_limit: TokenLimitParams) -> Value {
         let request = ChatCompletionRequest {
             model: "test-model".to_string(),
             messages: vec![ChatMessage {
@@ -655,6 +862,7 @@ mod tests {
             stream: false,
             response_format: None,
             reasoning,
+            token_limit,
         };
         serde_json::to_value(&request).unwrap()
     }
@@ -831,10 +1039,117 @@ mod tests {
         let deepseek = provider("custom", "https://api.deepseek.com/");
         let key = endpoint_key(&deepseek, "deepseek-chat");
         assert_eq!(key, "https://api.deepseek.com|deepseek-chat");
-        assert!(!is_known_rejected(&key));
-        remember_rejection(key.clone());
-        assert!(is_known_rejected(&key));
+        assert!(!is_known_rejected(&key, OptionalField::Reasoning));
+        remember_rejection(&key, OptionalField::Reasoning);
+        assert!(is_known_rejected(&key, OptionalField::Reasoning));
         // A different model on the same endpoint is tracked separately
-        assert!(!is_known_rejected(&endpoint_key(&deepseek, "other-model")));
+        assert!(!is_known_rejected(
+            &endpoint_key(&deepseek, "other-model"),
+            OptionalField::Reasoning
+        ));
+        // And so is the other field: an endpoint that rejects `reasoning_effort`
+        // must keep its output ceiling, or losing it re-creates the rejection
+        // the ceiling exists to prevent.
+        assert!(!is_known_rejected(&key, OptionalField::TokenLimit));
+    }
+
+    #[test]
+    fn a_rejection_is_blamed_on_the_field_the_body_names() {
+        use OptionalField::*;
+
+        // Groq on a non-reasoning model.
+        assert_eq!(
+            fields_blamed_by(
+                "{\"error\":{\"message\":\"'reasoning_effort' is not supported with this model\"}}"
+            ),
+            vec![Reasoning]
+        );
+        // OpenAI on a reasoning model.
+        assert_eq!(
+            fields_blamed_by(
+                "{\"error\":{\"message\":\"Unsupported parameter: 'max_tokens' is not supported \
+                 with this model. Use 'max_completion_tokens' instead.\"}}"
+            ),
+            vec![TokenLimit]
+        );
+        // Nothing named: drop both rather than pay another probe.
+        assert_eq!(fields_blamed_by("Bad Request"), vec![Reasoning, TokenLimit]);
+    }
+
+    #[test]
+    fn an_answer_cut_off_is_recognised_whatever_the_provider_calls_it() {
+        for reason in [
+            "length",
+            "max_tokens",
+            "MAX_TOKENS",
+            "model_length",
+            "token_limit",
+        ] {
+            assert!(stopped_at_the_limit(Some(reason)), "{reason}");
+        }
+        for reason in ["stop", "tool_calls", "content_filter"] {
+            assert!(!stopped_at_the_limit(Some(reason)), "{reason}");
+        }
+        assert!(!stopped_at_the_limit(None));
+    }
+
+    #[test]
+    fn every_request_carries_an_output_ceiling() {
+        // Without one, a provider metering output per minute reserves whatever
+        // the model could emit and rejects the call before generating anything.
+        for id in ["openai", "groq"] {
+            let json = request_json_with(
+                ReasoningParams::default(),
+                token_limit_params(&provider(id, "https://example.test/v1"), 640),
+            );
+            assert_eq!(json["max_completion_tokens"], 640, "{id}");
+            assert!(json.get("max_tokens").is_none(), "{id} must send only one");
+        }
+
+        // Local and unknown endpoints only reliably know the older field.
+        for id in ["custom", "openrouter", "cerebras"] {
+            let json = request_json_with(
+                ReasoningParams::default(),
+                token_limit_params(&provider(id, "http://localhost:11434/v1"), 640),
+            );
+            assert_eq!(json["max_tokens"], 640, "{id}");
+            assert!(
+                json.get("max_completion_tokens").is_none(),
+                "{id} must send only one"
+            );
+        }
+    }
+
+    #[test]
+    fn the_ceiling_leaves_room_to_rewrite_the_input() {
+        // The failing case from the log: a 1330 character transcript was
+        // estimated at 2048 output tokens by the provider and rejected against a
+        // 1000 per minute limit. Sizing it ourselves has to land under that.
+        let transcript = "a".repeat(1330);
+        let cap = output_token_cap(None, &transcript);
+        assert!(
+            (MIN_OUTPUT_TOKENS..1000).contains(&cap),
+            "1330 chars produced {cap}"
+        );
+
+        // A one word dictation still gets room to come back cleaned up.
+        assert_eq!(output_token_cap(None, "hi"), MIN_OUTPUT_TOKENS);
+
+        // And nothing reserves an unbounded budget.
+        assert_eq!(
+            output_token_cap(None, &"a".repeat(2_000_000)),
+            MAX_OUTPUT_TOKENS
+        );
+    }
+
+    #[test]
+    fn a_long_dictation_asks_for_more_than_a_free_tier_minute_allows() {
+        // Pinning the documented limit rather than a fix. Past roughly 2,300
+        // characters the cap exceeds Groq's 1000 per minute and the provider
+        // refuses the call. That path keeps the transcript and strikes nobody
+        // (see `FailureClass::RequestRejected`); this test exists so the cliff
+        // is a known number rather than a surprise.
+        assert!(output_token_cap(None, &"a".repeat(2_200)) <= 1000);
+        assert!(output_token_cap(None, &"a".repeat(2_400)) > 1000);
     }
 }

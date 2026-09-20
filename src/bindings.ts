@@ -1172,7 +1172,13 @@ export type CloudDegradeReason = "not_configured" |
  * nothing was sent. Separate from AllCredentialsFailed because the two
  * need opposite reactions: wait, versus go and look at your keys.
  */
-"all_credentials_cooling_down" | "all_credentials_failed" | "recording_too_large" | "timed_out" | "unexpected"
+"all_credentials_cooling_down" | "all_credentials_failed" | 
+/**
+ * Every key refused the request itself, not the account: the call needs
+ * more output than the tier allows in one minute. Pointing the user at
+ * their keys here would send them to rotate a key that is working.
+ */
+"request_too_large" | "recording_too_large" | "timed_out" | "unexpected"
 /**
  * Emitted whenever output quality dropped. Silent degradation is worse than
  * failure: the user would blame the model instead of an exhausted key.

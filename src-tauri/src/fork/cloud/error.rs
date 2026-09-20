@@ -23,6 +23,13 @@ pub enum FailureClass {
     Unreachable,
     /// Configuration error. Mark invalid and stop retrying.
     Permanent,
+    /// The provider refused the request itself, not the key: the call is too big
+    /// for the account's per-minute ceiling however long you wait, or the answer
+    /// came back cut off at the cap. Another key on a higher tier may still take
+    /// it, so the rotation continues, but no strike: benching a key for six
+    /// hours over a request no key could have served is how a working setup goes
+    /// dark for an afternoon.
+    RequestRejected,
     /// Everything else. Counts one strike against (credential, capability, model).
     Failure,
 }
@@ -37,6 +44,10 @@ pub struct ApiError {
     pub status: Option<u16>,
     pub retry_after: Option<Duration>,
     pub message: String,
+    /// Set by a caller that already knows the request, not the key, is at fault.
+    /// Kept separate from `status` because the clearest case of it, an answer
+    /// truncated at the output cap, arrives as a perfectly ordinary 200.
+    request_fault: bool,
 }
 
 impl ApiError {
@@ -45,6 +56,7 @@ impl ApiError {
             status: None,
             retry_after: None,
             message: message.into(),
+            request_fault: false,
         }
     }
 
@@ -57,7 +69,23 @@ impl ApiError {
             status: Some(status),
             retry_after,
             message: message.into(),
+            request_fault: false,
         }
+    }
+
+    /// The request could not be served as sent, and sending it again unchanged
+    /// will fail the same way.
+    pub fn request_rejected(message: impl Into<String>) -> Self {
+        Self {
+            status: None,
+            retry_after: None,
+            message: message.into(),
+            request_fault: true,
+        }
+    }
+
+    pub fn is_request_fault(&self) -> bool {
+        matches!(self.class(), FailureClass::RequestRejected)
     }
 
     pub fn is_auth_failure(&self) -> bool {
@@ -65,12 +93,23 @@ impl ApiError {
     }
 
     pub fn class(&self) -> FailureClass {
+        if self.request_fault {
+            return FailureClass::RequestRejected;
+        }
+
         let Some(status) = self.status else {
             return FailureClass::Unreachable;
         };
 
         if matches!(status, 401 | 403) {
             return FailureClass::Permanent;
+        }
+
+        // Read before the `retry-after` branch on purpose. Providers do attach a
+        // wait to this one, and honouring it would bench the key for that long
+        // over something waiting cannot fix.
+        if rejects_the_request_itself(status, &self.message) {
+            return FailureClass::RequestRejected;
         }
 
         // A wait is honoured only when the server stated one. No header, or a
@@ -103,6 +142,40 @@ impl ApiError {
         log::error!("{error}");
         error
     }
+}
+
+/// Whether a provider is refusing this request's shape rather than reporting on
+/// the key.
+///
+/// Matching on the body text is not a choice. The two cases arrive as the same
+/// status, from the same endpoint, and only the prose distinguishes them: "rate
+/// limit reached, used 30 of 30" is the key's quota and clears itself, while
+/// "request too large, limit 1000, requested 1155" is a single call that exceeds
+/// the whole per-minute ceiling and will do so in an empty minute just the same.
+/// The phrases below are the ones OpenAI-compatible providers actually emit for
+/// the second. Missing one costs a strike, which is what happened before this
+/// existed, so the list errs toward the specific.
+fn rejects_the_request_itself(status: u16, message: &str) -> bool {
+    // Payload Too Large has exactly one meaning.
+    if status == 413 {
+        return true;
+    }
+    if !matches!(status, 400 | 429) {
+        return false;
+    }
+
+    let message = message.to_ascii_lowercase();
+    [
+        "request too large",
+        "too large for model",
+        "reduce max_tokens",
+        "reduce the length",
+        "context_length_exceeded",
+        "context length",
+        "maximum context",
+    ]
+    .iter()
+    .any(|phrase| message.contains(phrase))
 }
 
 impl fmt::Display for ApiError {
@@ -151,6 +224,58 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(RETRY_AFTER, HeaderValue::from_str(value).unwrap());
         headers
+    }
+
+    #[test]
+    fn a_request_the_provider_will_never_accept_does_not_strike_the_key() {
+        // The real body, from handy.log. Three of these benched both keys for
+        // six hours over a call that no key on that tier could have served.
+        let groq = ApiError::from_status(
+            429,
+            None,
+            "API request failed: {\"error\":{\"message\":\"Request too large for model \
+             `qwen/qwen3.8-27b` in organization `org_x` service tier `on_demand` on output \
+             tokens per minute (OTPM): Limit 1000, Requested 1155. The request's expected \
+             output tokens exceed the enforced limit; reduce max_tokens (or the request's \
+             expected output) and try again.\",\"type\":\"tokens\",\"code\":\"rate_limit_exceeded\"}}",
+        );
+        assert_eq!(groq.class(), FailureClass::RequestRejected);
+        assert!(groq.is_request_fault());
+
+        // Even with a wait attached: waiting does not shrink the request.
+        let with_wait = ApiError::from_status(
+            429,
+            Some(Duration::from_secs(30)),
+            "Request too large for model `x`",
+        );
+        assert_eq!(with_wait.class(), FailureClass::RequestRejected);
+
+        // Payload Too Large has only the one meaning.
+        assert_eq!(
+            ApiError::from_status(413, None, "whatever").class(),
+            FailureClass::RequestRejected
+        );
+
+        // An answer cut off at the cap is the same category, on a 200.
+        assert_eq!(
+            ApiError::request_rejected("answer stopped at the 640 token output limit").class(),
+            FailureClass::RequestRejected
+        );
+    }
+
+    #[test]
+    fn an_ordinary_exhausted_quota_still_strikes() {
+        // The distinction that matters: this one clears itself and says
+        // something about the key, so it must keep its old classification.
+        let quota = ApiError::from_status(
+            429,
+            None,
+            "API request failed: {\"error\":{\"message\":\"Rate limit reached for model \
+             `qwen` in organization `org_x`: Limit 30, Used 30, Requested 1.\",\
+             \"code\":\"rate_limit_exceeded\"}}",
+        );
+        assert_eq!(quota.class(), FailureClass::Failure);
+        assert!(!quota.is_request_fault());
     }
 
     #[test]

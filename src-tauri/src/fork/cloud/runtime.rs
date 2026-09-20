@@ -42,6 +42,10 @@ pub enum CloudDegradeReason {
     /// need opposite reactions: wait, versus go and look at your keys.
     AllCredentialsCoolingDown,
     AllCredentialsFailed,
+    /// Every key refused the request itself, not the account: the call needs
+    /// more output than the tier allows in one minute. Pointing the user at
+    /// their keys here would send them to rotate a key that is working.
+    RequestTooLarge,
     RecordingTooLarge,
     TimedOut,
     Unexpected,
@@ -52,6 +56,12 @@ impl CloudDegradeReason {
         match error {
             crate::fork::cloud::PoolError::NotConfigured(_) => Self::NotConfigured,
             crate::fork::cloud::PoolError::AllCoolingDown { .. } => Self::AllCredentialsCoolingDown,
+            // The last error stands for all of them: a request every key refused
+            // on size was refused on size by each one in turn.
+            crate::fork::cloud::PoolError::Exhausted {
+                last_error: Some(error),
+                ..
+            } if error.is_request_fault() => Self::RequestTooLarge,
             crate::fork::cloud::PoolError::Exhausted { .. } => Self::AllCredentialsFailed,
         }
     }
