@@ -147,5 +147,14 @@
     "regenerating": "Post-processing...",
     "regenerateError": "Could not regenerate post-processing",
     "tabsLabel": "History view"
+  },
+  "historyExport": {
+    "label": "Export",
+    "tooltip": "Save the whole history as JSON or Markdown",
+    "dialogTitle": "Export history",
+    "working": "Exporting...",
+    "done_one": "Exported 1 entry.",
+    "done_other": "Exported {{count}} entries.",
+    "failed": "Could not write the export. See handy.log for details."
   }
 }

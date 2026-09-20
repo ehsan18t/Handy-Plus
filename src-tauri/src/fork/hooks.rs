@@ -20,6 +20,13 @@ use crate::settings::AppSettings;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 
+/// Writing the history out as a file, registered through the seam like the rest
+/// so `lib.rs` names no path inside the fork.
+///
+/// A glob rather than a named list: `#[tauri::command]` expands to hidden items
+/// beside the function, and re-exporting the function alone leaves `lib.rs`
+/// unable to register it.
+pub use crate::fork::history_export::*;
 /// The fork's Tauri commands and events, re-exported so `lib.rs` registers
 /// them through the seam like everything else. A future feature adds its
 /// commands here and `lib.rs` grows by one line each, never by an import.

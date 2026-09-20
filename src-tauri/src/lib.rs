@@ -748,6 +748,7 @@ pub fn run(cli_args: CliArgs) {
             fork::hooks::get_cloud_credential_status,
             fork::hooks::clear_cloud_cooldown,
             fork::hooks::get_cloud_providers,
+            fork::hooks::export_history,
             commands::audio::update_microphone_mode,
             commands::audio::get_microphone_mode,
             commands::audio::get_windows_microphone_permission_status,

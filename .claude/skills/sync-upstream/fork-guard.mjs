@@ -228,6 +228,7 @@ const EXPECTED_COMMANDS = [
   "get_cloud_credential_status",
   "clear_cloud_cooldown",
   "get_cloud_providers",
+  "export_history",
 ];
 
 const MAP_CHECK = "FORK.md lists every upstream file the fork edits";

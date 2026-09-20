@@ -5,3 +5,4 @@
 export { ProvidersSettings } from "./providers/ProvidersSettings";
 export { CloudSpeechSettings } from "./providers/CloudSpeechSettings";
 export { PostProcessingSettings as ForkPostProcessingSettings } from "./providers/PostProcessingSettings";
+export { ExportHistoryButton } from "./history/ExportHistoryButton";
