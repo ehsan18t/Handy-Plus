@@ -309,22 +309,16 @@ export const HistorySettings: React.FC = () => {
   return (
     <div className="max-w-3xl w-full mx-auto space-y-6">
       <div className="space-y-2">
-        <div className="px-4 flex items-center justify-between">
-          <div>
-            <h2 className="text-xs font-medium text-mid-gray uppercase tracking-wide">
-              {t("settings.history.title")}
-            </h2>
-          </div>
-          <div className="flex items-center gap-2">
-            <ExportHistoryButton />
-            <OpenRecordingsButton
-              onClick={openRecordingsFolder}
-              label={t("settings.history.openFolder")}
-            />
-          </div>
+        <div className="px-4">
+          <h2 className="text-xs font-medium text-mid-gray uppercase tracking-wide">
+            {t("settings.history.title")}
+          </h2>
         </div>
-        {postProcessEnabled && (
-          <div className="px-4">
+        {/* One toolbar row: tabs on the left when there are any, buttons always
+            on the right. `ml-auto` rather than `justify-between` so the buttons
+            do not slide left on the days post-processing is switched off. */}
+        <div className="px-4 flex items-center gap-2">
+          {postProcessEnabled && (
             <Tabs
               tabs={[
                 { id: "raw", label: t("fork:history.tabRaw") },
@@ -334,8 +328,15 @@ export const HistorySettings: React.FC = () => {
               onChange={setTab}
               ariaLabel={t("fork:history.tabsLabel")}
             />
+          )}
+          <div className="ml-auto flex items-center gap-2">
+            <ExportHistoryButton />
+            <OpenRecordingsButton
+              onClick={openRecordingsFolder}
+              label={t("settings.history.openFolder")}
+            />
           </div>
-        )}
+        </div>
         <div className="bg-background border border-mid-gray/20 rounded-lg overflow-visible">
           {content}
         </div>
