@@ -166,6 +166,85 @@ pub fn get_cursor_position(app_handle: &AppHandle) -> Option<(i32, i32)> {
     enigo.location().ok()
 }
 
+/// The one operation the chord helpers need from enigo.
+///
+/// It exists so the release-on-failure guarantee below can be tested at all:
+/// `Enigo::new` needs a display server, and the behaviour worth pinning is what
+/// happens when an injection *fails*, which a real one will not do on demand.
+pub(crate) trait KeyInjector {
+    fn inject(&mut self, key: Key, direction: enigo::Direction) -> Result<(), String>;
+}
+
+impl KeyInjector for Enigo {
+    fn inject(&mut self, key: Key, direction: enigo::Direction) -> Result<(), String> {
+        self.key(key, direction).map_err(|e| e.to_string())
+    }
+}
+
+/// Hold `modifiers` down, run `body`, then release them whatever `body` did.
+///
+/// Every chord below used to press a modifier and then `?` out of the next
+/// step, which returns with the modifier still down. Nothing further releases
+/// it: enigo's own held-key cleanup runs on `Drop`, and [`EnigoState`] is a
+/// Tauri-managed singleton that lives as long as the process. The operating
+/// system is then left believing that key is held, and the whole desktop
+/// behaves as if the user were leaning on Ctrl until they press and release it
+/// themselves.
+///
+/// The injection genuinely can fail mid-chord: `SendInput` is refused when the
+/// foreground window runs at a higher integrity level than Handy (an elevated
+/// terminal, Task Manager, a UAC prompt), and enigo reports that as an error on
+/// whichever step hit it.
+///
+/// Release order is the reverse of press order, and only keys actually pressed
+/// are released, so a failure part-way through a multi-modifier chord does not
+/// send an unbalanced release for a key that was never accepted.
+pub(crate) fn with_modifiers_held<E: KeyInjector>(
+    enigo: &mut E,
+    modifiers: &[(Key, &str)],
+    hold_ms: u64,
+    body: impl FnOnce(&mut E) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut pressed: Vec<(Key, &str)> = Vec::with_capacity(modifiers.len());
+    let mut outcome = Ok(());
+
+    for &(key, name) in modifiers {
+        match enigo.inject(key, enigo::Direction::Press) {
+            Ok(()) => pressed.push((key, name)),
+            Err(e) => {
+                outcome = Err(format!("Failed to press {name} key: {e}"));
+                break;
+            }
+        }
+    }
+
+    if outcome.is_ok() {
+        outcome = body(enigo);
+        if outcome.is_ok() {
+            std::thread::sleep(std::time::Duration::from_millis(hold_ms));
+        }
+    }
+
+    for (key, name) in pressed.into_iter().rev() {
+        if let Err(e) = enigo.inject(key, enigo::Direction::Release) {
+            // The one failure this function cannot repair. Retrying is pointless
+            // against the cause: the foreground window that refused the
+            // injection is still in the foreground a millisecond later. Say so
+            // loudly instead, because the user is about to meet a desktop that
+            // thinks the key is down and will have no idea why.
+            log::error!(
+                "Failed to release {name} after the paste chord: {e}. \
+                 The system may treat {name} as held until it is pressed and released again."
+            );
+            if outcome.is_ok() {
+                outcome = Err(format!("Failed to release {name} key: {e}"));
+            }
+        }
+    }
+
+    outcome
+}
+
 /// Sends a Ctrl+V or Cmd+V paste command using platform-specific virtual key codes.
 /// This ensures the paste works regardless of keyboard layout (e.g., Russian, AZERTY, DVORAK).
 /// Note: On Wayland, this may not work - callers should check for Wayland and use alternative methods.
@@ -185,21 +264,11 @@ pub fn send_paste_ctrl_v(enigo: &mut Enigo, hold_ms: u64) -> Result<(), String> 
     #[cfg(target_os = "linux")]
     let (modifier_key, v_key_code) = (Key::Control, Key::Unicode('v'));
 
-    // Press modifier + V
-    enigo
-        .key(modifier_key, enigo::Direction::Press)
-        .map_err(|e| format!("Failed to press modifier key: {}", e))?;
-    enigo
-        .key(v_key_code, enigo::Direction::Click)
-        .map_err(|e| format!("Failed to click V key: {}", e))?;
-
-    std::thread::sleep(std::time::Duration::from_millis(hold_ms));
-
-    enigo
-        .key(modifier_key, enigo::Direction::Release)
-        .map_err(|e| format!("Failed to release modifier key: {}", e))?;
-
-    Ok(())
+    with_modifiers_held(enigo, &[(modifier_key, "modifier")], hold_ms, |enigo| {
+        enigo
+            .inject(v_key_code, enigo::Direction::Click)
+            .map_err(|e| format!("Failed to click V key: {}", e))
+    })
 }
 
 /// Sends a Ctrl+Shift+V paste command.
@@ -214,27 +283,16 @@ pub fn send_paste_ctrl_shift_v(enigo: &mut Enigo, hold_ms: u64) -> Result<(), St
     #[cfg(target_os = "linux")]
     let (modifier_key, v_key_code) = (Key::Control, Key::Unicode('v'));
 
-    // Press Ctrl/Cmd + Shift + V
-    enigo
-        .key(modifier_key, enigo::Direction::Press)
-        .map_err(|e| format!("Failed to press modifier key: {}", e))?;
-    enigo
-        .key(Key::Shift, enigo::Direction::Press)
-        .map_err(|e| format!("Failed to press Shift key: {}", e))?;
-    enigo
-        .key(v_key_code, enigo::Direction::Click)
-        .map_err(|e| format!("Failed to click V key: {}", e))?;
-
-    std::thread::sleep(std::time::Duration::from_millis(hold_ms));
-
-    enigo
-        .key(Key::Shift, enigo::Direction::Release)
-        .map_err(|e| format!("Failed to release Shift key: {}", e))?;
-    enigo
-        .key(modifier_key, enigo::Direction::Release)
-        .map_err(|e| format!("Failed to release modifier key: {}", e))?;
-
-    Ok(())
+    with_modifiers_held(
+        enigo,
+        &[(modifier_key, "modifier"), (Key::Shift, "Shift")],
+        hold_ms,
+        |enigo| {
+            enigo
+                .inject(v_key_code, enigo::Direction::Click)
+                .map_err(|e| format!("Failed to click V key: {}", e))
+        },
+    )
 }
 
 /// Sends a Shift+Insert paste command (Windows and Linux only).
@@ -246,21 +304,11 @@ pub fn send_paste_shift_insert(enigo: &mut Enigo, hold_ms: u64) -> Result<(), St
     #[cfg(not(target_os = "windows"))]
     let insert_key_code = Key::Other(0x76); // XK_Insert (keycode 118 / 0x76, also used as fallback)
 
-    // Press Shift + Insert
-    enigo
-        .key(Key::Shift, enigo::Direction::Press)
-        .map_err(|e| format!("Failed to press Shift key: {}", e))?;
-    enigo
-        .key(insert_key_code, enigo::Direction::Click)
-        .map_err(|e| format!("Failed to click Insert key: {}", e))?;
-
-    std::thread::sleep(std::time::Duration::from_millis(hold_ms));
-
-    enigo
-        .key(Key::Shift, enigo::Direction::Release)
-        .map_err(|e| format!("Failed to release Shift key: {}", e))?;
-
-    Ok(())
+    with_modifiers_held(enigo, &[(Key::Shift, "Shift")], hold_ms, |enigo| {
+        enigo
+            .inject(insert_key_code, enigo::Direction::Click)
+            .map_err(|e| format!("Failed to click Insert key: {}", e))
+    })
 }
 
 /// Pastes text directly using the enigo text method.
@@ -271,4 +319,145 @@ pub fn paste_text_direct(enigo: &mut Enigo, text: &str) -> Result<(), String> {
         .map_err(|e| format!("Failed to send text directly: {}", e))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use enigo::Direction;
+
+    /// Records every injection and fails the nth one, which is the case a real
+    /// `Enigo` will not reproduce on request.
+    struct FakeInjector {
+        log: Vec<(Key, Direction)>,
+        fail_on: Option<usize>,
+        calls: usize,
+    }
+
+    impl FakeInjector {
+        fn new(fail_on: Option<usize>) -> Self {
+            Self {
+                log: Vec::new(),
+                fail_on,
+                calls: 0,
+            }
+        }
+
+        /// Net presses per key. Anything left above zero is a key the operating
+        /// system still believes is held.
+        fn still_held(&self) -> Vec<Key> {
+            let mut held: Vec<Key> = Vec::new();
+            for (key, direction) in &self.log {
+                match direction {
+                    Direction::Press => held.push(*key),
+                    Direction::Release => held.retain(|k| k != key),
+                    Direction::Click => {}
+                }
+            }
+            held
+        }
+    }
+
+    impl KeyInjector for FakeInjector {
+        fn inject(&mut self, key: Key, direction: Direction) -> Result<(), String> {
+            self.calls += 1;
+            if self.fail_on == Some(self.calls) {
+                // The shape enigo reports when SendInput is refused, which is
+                // what a higher-integrity foreground window causes on Windows.
+                return Err("not all input events were sent".to_string());
+            }
+            self.log.push((key, direction));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_failed_keystroke_still_releases_the_modifier() {
+        // Call 1 presses Ctrl, call 2 is the V click. Failing the click used to
+        // return with Ctrl down and nothing anywhere released it.
+        let mut fake = FakeInjector::new(Some(2));
+
+        let result = with_modifiers_held(&mut fake, &[(Key::Control, "Control")], 0, |enigo| {
+            enigo.inject(Key::Other(0x56), Direction::Click)
+        });
+
+        assert!(result.is_err(), "the failure must still be reported");
+        assert!(
+            fake.still_held().is_empty(),
+            "left held: {:?}",
+            fake.still_held()
+        );
+    }
+
+    #[test]
+    fn a_failed_release_is_reported_rather_than_swallowed() {
+        // Press, click, then fail the release itself. Nothing can repair this
+        // one, so the contract is only that it does not pass as success.
+        let mut fake = FakeInjector::new(Some(3));
+
+        let result = with_modifiers_held(&mut fake, &[(Key::Control, "Control")], 0, |enigo| {
+            enigo.inject(Key::Other(0x56), Direction::Click)
+        });
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn a_modifier_that_was_never_pressed_is_never_released() {
+        // Ctrl presses, Shift fails. Releasing Shift here would send an
+        // unbalanced key-up for a key the system never saw go down.
+        let mut fake = FakeInjector::new(Some(2));
+
+        let result = with_modifiers_held(
+            &mut fake,
+            &[(Key::Control, "Control"), (Key::Shift, "Shift")],
+            0,
+            |_| Ok(()),
+        );
+
+        assert!(result.is_err());
+        assert!(fake.still_held().is_empty());
+        assert!(
+            !fake
+                .log
+                .iter()
+                .any(|(key, dir)| *key == Key::Shift && *dir == Direction::Release),
+            "released a key that was never pressed: {:?}",
+            fake.log
+        );
+    }
+
+    #[test]
+    fn modifiers_are_released_in_reverse_order() {
+        let mut fake = FakeInjector::new(None);
+
+        with_modifiers_held(
+            &mut fake,
+            &[(Key::Control, "Control"), (Key::Shift, "Shift")],
+            0,
+            |enigo| enigo.inject(Key::Other(0x56), Direction::Click),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fake.log,
+            vec![
+                (Key::Control, Direction::Press),
+                (Key::Shift, Direction::Press),
+                (Key::Other(0x56), Direction::Click),
+                (Key::Shift, Direction::Release),
+                (Key::Control, Direction::Release),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_happy_path_leaves_nothing_held() {
+        let mut fake = FakeInjector::new(None);
+        with_modifiers_held(&mut fake, &[(Key::Control, "Control")], 0, |enigo| {
+            enigo.inject(Key::Other(0x56), Direction::Click)
+        })
+        .unwrap();
+        assert!(fake.still_held().is_empty());
+    }
 }

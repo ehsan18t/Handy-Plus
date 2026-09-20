@@ -734,37 +734,36 @@ pub(crate) fn send_return_key(enigo: &mut Enigo, key_type: AutoSubmitKey) -> Res
                 .key(Key::Return, Direction::Release)
                 .map_err(|e| format!("Failed to release Return key: {}", e))?;
         }
-        AutoSubmitKey::CtrlEnter => {
-            enigo
-                .key(Key::Control, Direction::Press)
-                .map_err(|e| format!("Failed to press Control key: {}", e))?;
-            enigo
-                .key(Key::Return, Direction::Press)
-                .map_err(|e| format!("Failed to press Return key: {}", e))?;
-            enigo
-                .key(Key::Return, Direction::Release)
-                .map_err(|e| format!("Failed to release Return key: {}", e))?;
-            enigo
-                .key(Key::Control, Direction::Release)
-                .map_err(|e| format!("Failed to release Control key: {}", e))?;
-        }
-        AutoSubmitKey::CmdEnter => {
-            enigo
-                .key(Key::Meta, Direction::Press)
-                .map_err(|e| format!("Failed to press Meta/Cmd key: {}", e))?;
-            enigo
-                .key(Key::Return, Direction::Press)
-                .map_err(|e| format!("Failed to press Return key: {}", e))?;
-            enigo
-                .key(Key::Return, Direction::Release)
-                .map_err(|e| format!("Failed to release Return key: {}", e))?;
-            enigo
-                .key(Key::Meta, Direction::Release)
-                .map_err(|e| format!("Failed to release Meta/Cmd key: {}", e))?;
-        }
+        // Both chords go through the guaranteed-release helper for the same
+        // reason the paste chords do: a `?` between the modifier press and its
+        // release leaves that key down for the rest of the session. `Key::Meta`
+        // is VK_LWIN on Windows, so this arm is the one path in the app that can
+        // strand the Windows key.
+        AutoSubmitKey::CtrlEnter => crate::input::with_modifiers_held(
+            enigo,
+            &[(Key::Control, "Control")],
+            0,
+            press_and_release_return,
+        )?,
+        AutoSubmitKey::CmdEnter => crate::input::with_modifiers_held(
+            enigo,
+            &[(Key::Meta, "Meta/Cmd")],
+            0,
+            press_and_release_return,
+        )?,
     }
 
     Ok(())
+}
+
+fn press_and_release_return(enigo: &mut Enigo) -> Result<(), String> {
+    use crate::input::KeyInjector;
+    enigo
+        .inject(Key::Return, Direction::Press)
+        .map_err(|e| format!("Failed to press Return key: {}", e))?;
+    enigo
+        .inject(Key::Return, Direction::Release)
+        .map_err(|e| format!("Failed to release Return key: {}", e))
 }
 
 fn should_send_auto_submit(auto_submit: bool, paste_method: PasteMethod) -> bool {
