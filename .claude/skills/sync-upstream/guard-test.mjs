@@ -60,7 +60,7 @@ const MUTATIONS = [
     "src-tauri/src/lib.rs", "CloudDegradedEvent"],
   ["the history regenerate command stays registered",
     "src-tauri/src/lib.rs", "commands::history::regenerate_history_entry_post_process"],
-  ["all 8 fork commands are registered",
+  ["every fork command is registered",
     "src-tauri/src/lib.rs", "fork::hooks::add_cloud_credential"],
   ["FORK.md lists every upstream file the fork edits",
     "FORK.md", "src/components/ui/Badge.tsx"],

@@ -267,8 +267,11 @@ function verify() {
   const missing = EXPECTED_COMMANDS.filter((name) => !registered.has(name));
   record(
     missing.length === 0,
-    `all ${EXPECTED_COMMANDS.length} fork commands are registered`,
-    `Not registered: ${missing.join(", ")}. A merge in lib.rs dropped it, or a command was added without listing it in EXPECTED_COMMANDS in this script. The UI calls it and fails at runtime.`,
+    // The count stays out of the name. It used to be in it, and every command
+    // added after renamed the check, which silently turned the matching
+    // mutation in guard-test.mjs into one that tests nothing.
+    `every fork command is registered`,
+    `Not registered: ${missing.join(", ")} (${missing.length} of ${EXPECTED_COMMANDS.length}). A merge in lib.rs dropped it, or a command was added without listing it in EXPECTED_COMMANDS in this script. The UI calls it and fails at runtime.`,
   );
 
   // The seam. Every upstream file reaches the fork through `fork::hooks` and
