@@ -211,6 +211,16 @@ const INVARIANTS = [
     want: /CloudDegradedEvent/,
     why: "Every fallback becomes invisible to the user without it.",
   },
+  {
+    // Read from the lockfile, not the manifest: a patch pinned to 0.3.4 stays
+    // in Cargo.toml looking intact after upstream bumps the requirement past
+    // it, and cargo only warns that the patch went unused. A path source has
+    // no `source =` line, so a registry one showing up means it stopped applying.
+    name: "handy-keys resolves to the vendored copy",
+    file: "src-tauri/Cargo.lock",
+    reject: /name = "handy-keys" version = "[^"]+" source = /,
+    why: "The Windows hook goes back to swallowing modifier key-ups, and a key the user let go of stays held at the OS. Move the fix in src-tauri/vendor/handy-keys onto the new version, or drop the vendor copy if upstream has published it.",
+  },
 ];
 
 // lib.rs holds a command list upstream also edits, so a merge can drop one of

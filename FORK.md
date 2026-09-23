@@ -110,7 +110,7 @@ fork-owned files.
 | `src-tauri/src/managers/history.rs`                   | `update_post_process`, which writes a regenerated cleanup onto an entry without rewriting its transcript                                                                                                 |
 | `src/components/ui/Tabs.tsx`                          | Fork-owned and new, at an upstream path. The map check only sees modified files, so it will never flag this one                                                                                          |
 | `src-tauri/src/managers/transcription.rs`             | Exposing the local text cleanup so cloud transcripts get the same treatment                                                                                                                              |
-| `src-tauri/Cargo.toml`                                | Multipart upload support and a shared byte buffer type                                                                                                                                                   |
+| `src-tauri/Cargo.toml`                                | Multipart upload support, a shared byte buffer type, and the `[patch.crates-io]` line pointing `handy-keys` at the vendored copy                                                                         |
 | `src-tauri/tauri.conf.json`                           | Updater repointed at this fork. Must stay diverged, and upstream's endpoint must not survive beside it: tauri tries them in order and both repos share a signing key                                     |
 | `src/App.tsx`                                         | Listener for the degradation event                                                                                                                                                                       |
 | `src/components/Sidebar.tsx`                          | Two new pages and the post-processing page swapped for the fork's, all imported from the `@/fork` barrel                                                                                                 |
@@ -123,7 +123,7 @@ fork-owned files.
 | `src/components/ui/Badge.tsx`                         | A danger variant, so a rejected key does not render in the brand colour                                                                                                                                  |
 | `src/i18n/index.ts`                                   | Registers the fork's string namespace                                                                                                                                                                    |
 | `.gitignore`                                          | Re-includes the skills directory upstream excludes                                                                                                                                                       |
-| `.prettierignore`                                     | Excludes `.claude/` so the app formatter leaves fork tooling alone                                                                                                                                       |
+| `.prettierignore`                                     | Excludes `.claude/` and `src-tauri/vendor/` so the app formatter leaves fork tooling and the vendored crate alone                                                                                        |
 
 ## Decisions taken deliberately
 
@@ -153,6 +153,8 @@ and no unbounded quota burn.
 stops an upgrade from silently losing the feature for someone who configured it
 before the fork existed. Provider configuration for that path lives on the API
 Keys page, not duplicated onto the post-processing page.
+
+**`handy-keys` is vendored, not forked on GitHub.** `src-tauri/vendor/handy-keys` is the published 0.3.4 with one fix in the Windows hook: a key-up is swallowed only when its own key-down was, and a modifier's key-up never is. Upstream decided on the keys still held, so letting go of Alt during Ctrl+Win+Alt under a Ctrl+Win binding left Alt held at the OS until it was tapped again. The copy is otherwise byte-identical to the release, so `git diff` against the first vendoring commit is the whole fix. When upstream publishes a version with the fix, delete the directory and the patch line; if it publishes one without, move the fix across, because the patch stops applying the moment the version requirement passes 0.3.4 and cargo only warns. `fork-guard verify` checks the lockfile for exactly that. The crate's `cargo test --test synthetic_input -- --ignored` includes the two injected-input tests that were seen red against the unpatched hook.
 
 **Upstream's hardcoded provider ids are left alone.** Refactoring them is a
 separate, optional piece of work and would enlarge the fork's diff for no

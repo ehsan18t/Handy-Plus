@@ -409,11 +409,12 @@ mod linux {
 #[cfg(target_os = "windows")]
 mod windows_tests {
     use super::*;
+    use handy_keys::{Hotkey, HotkeyManager, Modifiers};
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS,
-        KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSEEVENTF_MIDDLEUP, MOUSEINPUT, MOUSE_EVENT_FLAGS,
-        VIRTUAL_KEY, VK_F20, VK_MEDIA_NEXT_TRACK, VK_MEDIA_PLAY_PAUSE, VK_MEDIA_PREV_TRACK,
-        VK_MEDIA_STOP,
+        GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
+        KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSEEVENTF_MIDDLEUP, MOUSEINPUT,
+        MOUSE_EVENT_FLAGS, VIRTUAL_KEY, VK_F20, VK_LMENU, VK_MEDIA_NEXT_TRACK, VK_MEDIA_PLAY_PAUSE,
+        VK_MEDIA_PREV_TRACK, VK_MEDIA_STOP, VK_RCONTROL, VK_RWIN,
     };
 
     fn send_f20(key_up: bool) {
@@ -590,5 +591,101 @@ mod windows_tests {
                 vk.0
             );
         }
+    }
+
+    fn send_vk(vk: VIRTUAL_KEY, key_up: bool) {
+        let input = INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: vk,
+                    wScan: 0,
+                    dwFlags: if key_up {
+                        KEYEVENTF_KEYUP
+                    } else {
+                        KEYBD_EVENT_FLAGS(0)
+                    },
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        let sent = unsafe { SendInput(&[input], std::mem::size_of::<INPUT>() as i32) };
+        assert_eq!(sent, 1, "SendInput failed");
+        // Let the hook decide before the next injection or state read.
+        std::thread::sleep(Duration::from_millis(30));
+    }
+
+    /// Whether the system believes `vk` is held. A key-up the hook swallows
+    /// never reaches the async key state, which is exactly how a stuck key
+    /// looks to every other application.
+    fn system_holds(vk: VIRTUAL_KEY) -> bool {
+        unsafe { GetAsyncKeyState(vk.0 as i32) as u16 & 0x8000 != 0 }
+    }
+
+    /// Letting go of a third modifier while a two-modifier hotkey is still
+    /// held must reach the system (Handy-Plus: Alt stuck after Ctrl+Win+Alt
+    /// under a Ctrl+Win push-to-talk binding). Right-side keys, so a real
+    /// left-side binding in a running app is not triggered by the test.
+    #[test]
+    #[ignore = "needs an interactive desktop session; run: cargo test --test synthetic_input -- --ignored"]
+    fn extra_modifier_release_reaches_system() {
+        let manager = HotkeyManager::new_with_blocking().expect("failed to spawn manager");
+        manager
+            .register(Hotkey::new(Modifiers::CTRL_RIGHT | Modifiers::CMD_RIGHT, None).unwrap())
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+
+        send_vk(VK_RCONTROL, false);
+        send_vk(VK_RWIN, false);
+        send_vk(VK_LMENU, false);
+        send_vk(VK_LMENU, true);
+        let alt_stuck = system_holds(VK_LMENU);
+        send_vk(VK_RWIN, true);
+        send_vk(VK_RCONTROL, true);
+        if alt_stuck {
+            // Clear it for the session the test runs in before failing.
+            send_vk(VK_LMENU, true);
+        }
+        assert!(
+            !alt_stuck,
+            "Alt key-up was swallowed: the system still holds Alt"
+        );
+    }
+
+    /// A key pressed before the hotkey's modifier must still be released at
+    /// the system when that release completes the hotkey (F20 down, Ctrl
+    /// down, F20 up under a Ctrl+F20 binding).
+    #[test]
+    #[ignore = "needs an interactive desktop session; run: cargo test --test synthetic_input -- --ignored"]
+    fn release_of_key_pressed_before_hotkey_reaches_system() {
+        let manager = HotkeyManager::new_with_blocking().expect("failed to spawn manager");
+        manager
+            .register(Hotkey::new(Modifiers::CTRL_RIGHT, Key::F20).unwrap())
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+
+        send_vk(VK_F20, false);
+        send_vk(VK_RCONTROL, false);
+        send_vk(VK_F20, true);
+        let f20_stuck = system_holds(VK_F20);
+        send_vk(VK_RCONTROL, true);
+        if f20_stuck {
+            send_vk(VK_F20, true);
+        }
+        assert!(
+            !f20_stuck,
+            "F20 key-up was swallowed: the system still holds F20"
+        );
+
+        // The hotkey itself is still swallowed whole.
+        send_vk(VK_RCONTROL, false);
+        send_vk(VK_F20, false);
+        let f20_leaked = system_holds(VK_F20);
+        send_vk(VK_F20, true);
+        let f20_up_leaked = system_holds(VK_F20);
+        send_vk(VK_RCONTROL, true);
+        assert!(!f20_leaked, "the hotkey's own F20 press reached the system");
+        assert!(!f20_up_leaked, "F20 left held after the hotkey");
     }
 }

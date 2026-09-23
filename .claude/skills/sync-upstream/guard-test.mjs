@@ -78,6 +78,9 @@ const REINTRODUCE = [
   ["the updater lists no endpoint but this fork's",
     "src-tauri/tauri.conf.json",
     '\n"https://github.com/cjpais/Handy/releases/latest/download/latest.json"\n'],
+  ["handy-keys resolves to the vendored copy",
+    "src-tauri/Cargo.lock",
+    '\n[[package]]\nname = "handy-keys"\nversion = "0.3.5"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n'],
 ];
 
 function guard() {

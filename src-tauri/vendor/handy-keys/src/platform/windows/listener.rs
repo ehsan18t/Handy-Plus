@@ -1,5 +1,6 @@
 //! Windows low-level keyboard hook implementation
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
@@ -95,6 +96,9 @@ struct HookContext {
     /// hold defuses the shell's menu heuristic for the whole hold; cleared
     /// once no Win/Alt modifier remains held.
     menu_mask_sent: bool,
+    /// Keys and buttons whose latest down was swallowed. Their up is
+    /// swallowed with them; every other up passes (see `block_transition`).
+    blocked_downs: HashSet<Key>,
 }
 
 thread_local! {
@@ -257,6 +261,9 @@ fn reconcile_modifiers_in_context() {
     HOOK_CONTEXT.with(|ctx_cell| {
         if let Some(ctx) = ctx_cell.borrow_mut().as_mut() {
             reconcile_modifiers(ctx);
+            // Ups lost to the secure desktop or a suspend leave their keys
+            // behind; forgetting them only ever lets an orphan up through.
+            ctx.blocked_downs.clear();
         }
     });
 }
@@ -406,6 +413,7 @@ pub(crate) fn spawn(blocking_hotkeys: Option<BlockingHotkeys>) -> Result<Windows
                 blocking_hotkeys: thread_blocking,
                 altgr_phantom_ctrl: false,
                 menu_mask_sent: false,
+                blocked_downs: HashSet::new(),
             });
         });
 
@@ -566,13 +574,25 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
                 // Only emit event if modifiers actually changed
                 if ctx.current_modifiers != prev_modifiers {
                     // Check if modifier-only combo should be blocked
-                    should_block =
+                    let matched =
                         should_block_hotkey(&ctx.blocking_hotkeys, ctx.current_modifiers, None);
+                    // Only the press that completes the combo is swallowed,
+                    // never a release. Letting go of Alt while Ctrl+Win is
+                    // still held leaves exactly Ctrl+Win, which matches; the
+                    // shell saw Alt go down, so swallowing its up leaves
+                    // Alt held at the OS until the user taps it again, and
+                    // reconciliation then adopts that phantom Alt so the
+                    // hotkey itself stops matching. A release whose press
+                    // was swallowed is harmless to pass.
+                    should_block = matched && is_key_down;
 
                     // A blocked modifier press (the Shift of a Win+Shift
                     // modifier-only hotkey) is as invisible to the shell as
-                    // a blocked regular key, so it needs the same mask.
-                    if needs_menu_mask(should_block, ctx.current_modifiers, ctx.menu_mask_sent) {
+                    // a blocked regular key, so it needs the same mask. A
+                    // matched release keeps its mask even though it now
+                    // passes, so the shell's menu heuristic sees what it
+                    // saw before.
+                    if needs_menu_mask(matched, ctx.current_modifiers, ctx.menu_mask_sent) {
                         ctx.menu_mask_sent = true;
                         needs_mask = true;
                     }
@@ -601,16 +621,24 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
 
                 if let Some(key) = map_key(vk_code, scan_code, is_extended) {
                     // Regular key event
-                    should_block = should_block_hotkey(
+                    let matched = should_block_hotkey(
                         &ctx.blocking_hotkeys,
                         ctx.current_modifiers,
                         Some(key),
                     );
+                    should_block =
+                        block_transition(&mut ctx.blocked_downs, key, is_key_down, matched);
 
                     // The shell can no longer see the key we are about to
                     // swallow; without a substitute, releasing Win/Alt would
                     // read as a lone tap and open the Start menu (#917).
-                    if needs_menu_mask(should_block, ctx.current_modifiers, ctx.menu_mask_sent) {
+                    // Keyed on the match as well as the block, so a key-up
+                    // that used to be swallowed keeps its mask now it passes.
+                    if needs_menu_mask(
+                        matched || should_block,
+                        ctx.current_modifiers,
+                        ctx.menu_mask_sent,
+                    ) {
                         ctx.menu_mask_sent = true;
                         needs_mask = true;
                     }
@@ -679,14 +707,18 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPA
             // event), so reconcile before reading them.
             reconcile_modifiers(ctx);
 
-            // Only report left/right clicks when modifiers are held (to avoid noise)
+            // Only report left/right clicks when modifiers are held (to avoid
+            // noise). They still go through `block_transition` either way: a
+            // plain drag's down has to clear an entry left by an earlier
+            // swallowed Ctrl+click, or Shift held for the drag's release would
+            // let that stale entry swallow the up and lock the drag.
             let has_modifiers = !ctx.current_modifiers.is_empty();
 
             let (key, is_down) = match wparam.0 as u32 {
-                WM_LBUTTONDOWN if has_modifiers => (Some(Key::MouseLeft), true),
-                WM_LBUTTONUP if has_modifiers => (Some(Key::MouseLeft), false),
-                WM_RBUTTONDOWN if has_modifiers => (Some(Key::MouseRight), true),
-                WM_RBUTTONUP if has_modifiers => (Some(Key::MouseRight), false),
+                WM_LBUTTONDOWN => (Some(Key::MouseLeft), true),
+                WM_LBUTTONUP => (Some(Key::MouseLeft), false),
+                WM_RBUTTONDOWN => (Some(Key::MouseRight), true),
+                WM_RBUTTONUP => (Some(Key::MouseRight), false),
                 // Middle and X buttons always reported
                 WM_MBUTTONDOWN => (Some(Key::MouseMiddle), true),
                 WM_MBUTTONUP => (Some(Key::MouseMiddle), false),
@@ -717,22 +749,30 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPA
             };
 
             if let Some(key) = key {
-                should_block =
-                    should_block_hotkey(&ctx.blocking_hotkeys, ctx.current_modifiers, Some(key));
+                let reported = has_modifiers || !matches!(key, Key::MouseLeft | Key::MouseRight);
+                let matched = reported
+                    && should_block_hotkey(&ctx.blocking_hotkeys, ctx.current_modifiers, Some(key));
+                should_block = block_transition(&mut ctx.blocked_downs, key, is_down, matched);
 
                 // A blocked Win/Alt+click hides the click from the shell
                 // just like a blocked key, so the hold needs the same mask.
-                if needs_menu_mask(should_block, ctx.current_modifiers, ctx.menu_mask_sent) {
+                if needs_menu_mask(
+                    matched || should_block,
+                    ctx.current_modifiers,
+                    ctx.menu_mask_sent,
+                ) {
                     ctx.menu_mask_sent = true;
                     needs_mask = true;
                 }
 
-                let _ = ctx.event_sender.send(KeyEvent {
-                    modifiers: ctx.current_modifiers,
-                    key: Some(key),
-                    is_key_down: is_down,
-                    changed_modifier: None,
-                });
+                if reported {
+                    let _ = ctx.event_sender.send(KeyEvent {
+                        modifiers: ctx.current_modifiers,
+                        key: Some(key),
+                        is_key_down: is_down,
+                        changed_modifier: None,
+                    });
+                }
             }
         }
     });
@@ -748,6 +788,31 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPA
         // Pass to next hook in chain
         CallNextHookEx(None, code, wparam, lparam)
     }
+}
+
+/// Whether to swallow a key or button transition, given whether its event
+/// matches a registered hotkey. A down is swallowed when it matches. An up
+/// is swallowed only when its own latest down was, whatever it matches now:
+/// matching on the up alone swallows the release of a key whose press the
+/// system saw (Space pressed first, then Ctrl, then Space released under a
+/// Ctrl+Space hotkey), and the system then holds that key down forever.
+/// Auto-repeat downs re-decide, so a repeat that passes after the hotkey's
+/// modifier is let go also lets the eventual up pass.
+fn block_transition(
+    blocked_downs: &mut HashSet<Key>,
+    key: Key,
+    is_down: bool,
+    matched: bool,
+) -> bool {
+    if !is_down {
+        return blocked_downs.remove(&key);
+    }
+    if matched {
+        blocked_downs.insert(key);
+    } else {
+        blocked_downs.remove(&key);
+    }
+    matched
 }
 
 /// Whether blocking this event must be accompanied by a menu-mask injection:
@@ -852,6 +917,38 @@ mod tests {
         let mut msg = MSG::default();
         assert!(drain_thread_messages(&mut msg).quit);
         clear_message_queue();
+    }
+
+    #[test]
+    fn up_is_blocked_only_when_its_down_was() {
+        let mut blocked = HashSet::new();
+        // Space pressed before Ctrl: its down passed, so its up must pass
+        // even though Ctrl+Space matches by the time it is released.
+        assert!(!block_transition(&mut blocked, Key::Space, true, false));
+        assert!(!block_transition(&mut blocked, Key::Space, false, true));
+        // The hotkey itself: down swallowed, so its up is swallowed too,
+        // even after Ctrl was let go first and nothing matches any more.
+        assert!(block_transition(&mut blocked, Key::Space, true, true));
+        assert!(block_transition(&mut blocked, Key::Space, false, false));
+        assert!(blocked.is_empty());
+    }
+
+    #[test]
+    fn passing_auto_repeat_lets_the_up_pass() {
+        let mut blocked = HashSet::new();
+        assert!(block_transition(&mut blocked, Key::Space, true, true));
+        // Ctrl let go while Space still repeats: the repeat reaches the
+        // system, so the system needs the release as well.
+        assert!(!block_transition(&mut blocked, Key::Space, true, false));
+        assert!(!block_transition(&mut blocked, Key::Space, false, true));
+    }
+
+    #[test]
+    fn blocked_downs_are_tracked_per_key() {
+        let mut blocked = HashSet::new();
+        assert!(block_transition(&mut blocked, Key::F20, true, true));
+        assert!(!block_transition(&mut blocked, Key::MouseX1, false, true));
+        assert!(block_transition(&mut blocked, Key::F20, false, true));
     }
 
     #[test]
@@ -1070,6 +1167,7 @@ mod tests {
             blocking_hotkeys: None,
             altgr_phantom_ctrl: false,
             menu_mask_sent: true,
+            blocked_downs: HashSet::new(),
         };
         reconcile_modifiers(&mut ctx);
         assert_eq!(ctx.current_modifiers, Modifiers::empty());
