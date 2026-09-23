@@ -20,6 +20,10 @@ src-tauri/src/catalog/catalog.json
 .DS_Store
 *.log
 
+# Fork: a vendored crate kept byte-identical to its release apart from the
+# fork's fix, so the diff against upstream stays that fix alone.
+src-tauri/vendor
+
 # Fork: model-facing tooling, not app source. Keeping it out of the app
 # formatter stops `bun run format` churning files the app never loads.
 .claude/
