@@ -24,8 +24,7 @@ pub enum FailureClass {
     /// Configuration error. Mark invalid and stop retrying.
     Permanent,
     /// The provider refused the request itself, not the key: the call is too big
-    /// for the account's per-minute ceiling however long you wait, or the answer
-    /// came back cut off at the cap. Another key on a higher tier may still take
+    /// for the account's per-minute ceiling however long you wait. Another key on a higher tier may still take
     /// it, so the rotation continues, but no strike: benching a key for six
     /// hours over a request no key could have served is how a working setup goes
     /// dark for an afternoon.
@@ -44,10 +43,6 @@ pub struct ApiError {
     pub status: Option<u16>,
     pub retry_after: Option<Duration>,
     pub message: String,
-    /// Set by a caller that already knows the request, not the key, is at fault.
-    /// Kept separate from `status` because the clearest case of it, an answer
-    /// truncated at the output cap, arrives as a perfectly ordinary 200.
-    request_fault: bool,
 }
 
 impl ApiError {
@@ -56,7 +51,6 @@ impl ApiError {
             status: None,
             retry_after: None,
             message: message.into(),
-            request_fault: false,
         }
     }
 
@@ -69,18 +63,6 @@ impl ApiError {
             status: Some(status),
             retry_after,
             message: message.into(),
-            request_fault: false,
-        }
-    }
-
-    /// The request could not be served as sent, and sending it again unchanged
-    /// will fail the same way.
-    pub fn request_rejected(message: impl Into<String>) -> Self {
-        Self {
-            status: None,
-            retry_after: None,
-            message: message.into(),
-            request_fault: true,
         }
     }
 
@@ -93,10 +75,6 @@ impl ApiError {
     }
 
     pub fn class(&self) -> FailureClass {
-        if self.request_fault {
-            return FailureClass::RequestRejected;
-        }
-
         let Some(status) = self.status else {
             return FailureClass::Unreachable;
         };
@@ -253,12 +231,6 @@ mod tests {
         // Payload Too Large has only the one meaning.
         assert_eq!(
             ApiError::from_status(413, None, "whatever").class(),
-            FailureClass::RequestRejected
-        );
-
-        // An answer cut off at the cap is the same category, on a 200.
-        assert_eq!(
-            ApiError::request_rejected("answer stopped at the 640 token output limit").class(),
             FailureClass::RequestRejected
         );
     }

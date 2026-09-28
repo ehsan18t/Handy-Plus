@@ -430,19 +430,7 @@ impl CredentialPool {
                         validity_updates
                             .push((credential_id.to_string(), CredentialValidity::Invalid));
                     }
-                    let refused_the_request = error.is_request_fault();
                     last_error = Some(error);
-                    if refused_the_request {
-                        // Every remaining key would be handed the same oversized
-                        // request and refuse it the same way, and when the
-                        // refusal is a truncated answer each of those is a
-                        // completion the user is billed for and cannot use. Stop
-                        // here so the reported reason is this one, undiluted.
-                        warn!(
-                            "The request itself was refused for {capability}; not offering it to the remaining credential(s)"
-                        );
-                        break;
-                    }
                 }
             }
         }
@@ -639,10 +627,9 @@ mod tests {
                 "a working key must not be marked invalid"
             );
             match run.result {
-                // Offering the same oversized request to the second key would
-                // only be refused again, and when the refusal is a truncated
-                // answer it is a completion the user pays for.
-                Err(PoolError::Exhausted { attempted, .. }) => assert_eq!(attempted, 1),
+                // Limits are per account, so the other key gets its turn: only
+                // the provider knows whether it can take the request.
+                Err(PoolError::Exhausted { attempted, .. }) => assert_eq!(attempted, 2),
                 other => panic!("expected an exhausted rotation, got {other:?}"),
             }
         }
